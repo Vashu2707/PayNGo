@@ -7,7 +7,7 @@ from ultralytics import YOLO
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="Train YOLOv10 on the blue-lays shelf dataset.")
+    parser = argparse.ArgumentParser(description="Train YOLOv10 on the custom product dataset.")
     parser.add_argument("--weights", default="yolov10n.pt", help="Path to the pretrained YOLOv10 weights file.")
     parser.add_argument("--data", default="cv-ml-core/data/dataset.yaml", help="Path to the YOLO data YAML file.")
     parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs.")
@@ -44,7 +44,7 @@ def main():
     model = YOLO(str(weights_path))
     device = resolve_device(args.device)
 
-    print("Starting training on blue-lays dataset...")
+    print("Starting training on custom product dataset...")
     model.train(
         data=str(data_path),
         epochs=args.epochs,

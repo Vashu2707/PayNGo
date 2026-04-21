@@ -1,13 +1,14 @@
 # Shelf Product Detection
 
-This project uses a YOLOv10 model to detect products from a live camera feed.
+This project uses a YOLOv10 model to detect multiple products from a live camera feed.
 
 ## What it does
-- Loads a pretrained `yolov10n.pt` model
+- Loads a custom trained YOLOv10 model
 - Opens the default camera
 - Detects products in real time
 - Overlays bounding boxes and confidence scores
-- Displays a live "accuracy" estimate based on detection confidence
+- Displays custom trained products in GREEN and other objects in RED
+- Shows live statistics including detection counts and confidence
 
 ## Setup
 1. Create and activate a Python virtual environment:
@@ -23,18 +24,27 @@ This project uses a YOLOv10 model to detect products from a live camera feed.
 
 ## Run
 ```bash
-python app.py --weights yolov10n.pt --camera 0
+python app.py
 ```
 
-## Train on blue-lays dataset
+## Train on custom product dataset
 The dataset is stored in `cv-ml-core/data/yolo-dataset` with labels under `labels/train` and `labels/val`, and the config is in `cv-ml-core/data/dataset.yaml`.
 
 ```bash
 python train.py --weights yolov10n.pt --data cv-ml-core/data/dataset.yaml --epochs 20 --batch 16
 ```
 
-The training results will be saved under `runs/train/blue-lays`.
+The training results will be saved under `runs/train/`.
+
+## Test the model
+Test the trained model on validation images:
+
+```bash
+python test_model.py
+```
 
 ## Notes
-- The app uses the preserved dataset config at `cv-ml-core/data/dataset.yaml` for custom label names when available.
-- Training is now available through `train.py` and uses the existing `blue-lays` dataset.
+- The app automatically loads custom product class names from `cv-ml-core/data/dataset.yaml`
+- Custom trained products are displayed with GREEN bounding boxes
+- Other objects detected by the pretrained model are shown with RED bounding boxes
+- Training uses data augmentation and regularization to prevent overfitting

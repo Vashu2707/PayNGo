@@ -371,9 +371,9 @@ Examples:
     
     parser.add_argument(
         "--product-classes",
-        default="blue-lays",
+        default="",
         help="""Comma-separated custom product class names (drawn in GREEN).
-Other detections are shown in RED. (default: %(default)s)"""
+If not provided, loads from --data-config. Other detections are shown in RED."""
     )
     
     return parser.parse_args()
@@ -404,10 +404,19 @@ def main():
     if not capture.isOpened():
         raise RuntimeError(f"Cannot open camera index {args.camera}")
 
-    # Parse custom product labels
-    product_labels = {name.strip() for name in args.product_classes.split(",") if name.strip()}
-    if not product_labels:
-        product_labels = {"blue-lays"}
+    # Load custom product labels from dataset config
+    data_config_path = Path(args.data_config)
+    dataset_names = load_dataset_names(data_config_path)
+    if dataset_names:
+        product_labels = set(dataset_names)
+        print(f"Loaded custom product classes from {data_config_path}: {', '.join(product_labels)}")
+    else:
+        # Fallback to command line argument
+        product_labels = {name.strip() for name in args.product_classes.split(",") if name.strip()}
+        if not product_labels:
+            print("Warning: No custom product classes specified and could not load from dataset config")
+            product_labels = set()
+        print(f"Using custom product classes from command line: {', '.join(product_labels)}")
 
     print(f"Custom product classes (GREEN): {', '.join(product_labels)}")
     print(f"Other detections (RED): All objects from pretrained model")
