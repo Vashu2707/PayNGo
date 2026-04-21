@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 import argparse
+import os
+import sys
+import warnings
 from pathlib import Path
 
 import torch
 from ultralytics import YOLO
+
+# Suppress pi-heif warnings
+warnings.filterwarnings('ignore', message='.*pi-heif.*')
 
 
 def parse_arguments():
@@ -14,7 +20,7 @@ def parse_arguments():
     parser.add_argument("--batch", type=int, default=16, help="Training batch size.")
     parser.add_argument("--imgsz", type=int, default=640, help="Training image size.")
     parser.add_argument("--project", default="runs/train", help="Project folder to save training results.")
-    parser.add_argument("--name", default="blue-lays", help="Name of the training run.")
+    parser.add_argument("--name", default="product-detection", help="Name of the training run.")
     parser.add_argument("--device", default="auto", help="Device to use for training, e.g. auto, 0 or cpu.")
     return parser.parse_args()
 
@@ -53,6 +59,8 @@ def main():
         project=args.project,
         name=args.name,
         device=device,
+        workers=0,  # Set to 0 to avoid multiprocessing issues on macOS
+        cache=False,  # Disable caching to avoid file access issues
         # Add data augmentation to prevent overfitting
         augment=True,
         hsv_h=0.015,  # Hue augmentation
@@ -70,6 +78,8 @@ def main():
         # Add regularization to prevent overfitting
         dropout=0.1,  # Dropout rate
         weight_decay=0.0005,  # L2 regularization
+        patience=100,  # Early stopping patience
+        verbose=True,  # Detailed logging
     )
 
     print("Training complete. Check the results in the project directory.")

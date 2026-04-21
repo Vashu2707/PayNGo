@@ -37,7 +37,7 @@ def test_model_on_images(model_path, image_paths, confidence_thresholds=[0.3, 0.
 
 def main():
     parser = argparse.ArgumentParser(description="Test YOLO model on sample images.")
-    parser.add_argument("--model", default="runs/detect/runs/train/blue-lays2/weights/best.pt",
+    parser.add_argument("--model", default="runs/train/product-detection/weights/best.pt",
                        help="Path to the trained model weights.")
     parser.add_argument("--images", nargs="+",
                        default=["cv-ml-core/data/yolo-dataset/images/val/"],  # Default to val images

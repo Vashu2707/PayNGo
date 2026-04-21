@@ -345,7 +345,7 @@ Examples:
     
     parser.add_argument(
         "--weights",
-        default="runs/detect/runs/train/blue-lays2/weights/best.pt",
+        default="runs/train/product-detection/weights/best.pt",
         help="Path to the YOLOv10 model weights file (default: %(default)s)"
     )
     
