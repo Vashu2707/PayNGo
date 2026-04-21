@@ -24,3 +24,5 @@ ENV/
 runs/
 
 data/
+
+test_images/
