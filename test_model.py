@@ -30,7 +30,7 @@ def test_model_on_images(model_path, image_paths, confidence_thresholds=[0.3, 0.
                 detections = len(boxes)
                 scores = boxes.conf.cpu().numpy()
                 avg_conf = scores.mean() if len(scores) > 0 else 0.0
-                print(".2f")
+                print(f"  Conf {conf}: {detections} detections, avg conf {avg_conf:.2f}")
             else:
                 print(f"  Conf {conf}: 0 detections")
 
