@@ -19,6 +19,7 @@ npm-debug.log*
 .env
 .env.local
 .env.local.example
+.env.example
 
 # vercel
 .vercel
