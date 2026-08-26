@@ -37,6 +37,8 @@ def main():
         out.mkdir(parents=True, exist_ok=True)
 
     for file in sorted(folder.iterdir()):
+        if not file.is_file():
+            continue
         img = cv2.imread(str(file))
         if img is None:
             print(f"Skipping {file.name}")

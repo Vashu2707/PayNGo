@@ -5,9 +5,9 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const { items, updatedAt } = await getCart();
+    const cart = await getCart();
     return NextResponse.json(
-      { items, updatedAt, syncedAt: new Date().toISOString() },
+      { ...cart, syncedAt: new Date().toISOString() },
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch (err) {

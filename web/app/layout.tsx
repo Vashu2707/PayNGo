@@ -1,9 +1,17 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  themeColor: "#0f172a",
+};
+
 export const metadata: Metadata = {
-  title: "PayNGo · Smart Shelf Cart",
-  description: "Real-time cart synced from a smart shelf camera.",
+  title: "PayNGo POS",
+  description: "Point-of-sale checkout for smart shelf stores.",
 };
 
 const STALE_CHUNK_SNIPPET = `

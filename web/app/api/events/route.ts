@@ -11,6 +11,7 @@ export async function GET() {
     const events = docs.map((e) => ({
       type: e.type,
       product: e.product,
+      quantity: e.quantity,
       ts: e.ts instanceof Date ? e.ts.toISOString() : String(e.ts),
     }));
     return NextResponse.json(

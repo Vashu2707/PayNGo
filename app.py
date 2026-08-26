@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
-YOLOv10 Product Detection
-GREEN → Custom trained products
-RED → Other objects (pretrained YOLO)
+YOLOv10 Product Detection demo
+GREEN -> Custom trained products
+RED   -> Other objects (pretrained YOLO)
+
+Usage:
+  python app.py                       # default camera, conf 0.5
+  python app.py --camera 1 --conf 0.45
 """
 
-import cv2
+import argparse
 from pathlib import Path
+
+import cv2
 from ultralytics import YOLO
 
 # Colors
@@ -17,13 +23,15 @@ GRAY = (200, 200, 200)
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
 
 # ---------- UTIL ----------
 def find_latest_model():
-    paths = list(Path("runs").rglob("best.pt"))
+    paths = [p for p in Path("runs").rglob("best.pt") if p.is_file()]
     if not paths:
         return None
-    return str(sorted(paths)[-1])
+    return str(max(paths, key=lambda p: p.stat().st_mtime))
 
 
 def draw_label(frame, text, x, y, color):
@@ -33,46 +41,20 @@ def draw_label(frame, text, x, y, color):
     cv2.putText(frame, text, (x + 2, y - 2), FONT, 0.5, (0, 0, 0), 1)
 
 
-# ---------- DRAW DETECTIONS ----------
-def draw_detections(frame, custom_result, pretrained_result):
-    custom_count = 0
-    other_count = 0
-    total_conf = 0
-    total_det = 0
-
-    # ---- Custom Model (GREEN) ----
-    if custom_result.boxes is not None:
-        for box in custom_result.boxes:
+def draw_boxes(frame, result, color):
+    """Draw every detection in `result` with `color`. Returns count."""
+    count = 0
+    if result.boxes is not None:
+        for box in result.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             conf = float(box.conf[0])
             cls = int(box.cls[0])
-            label = custom_result.names[cls]
+            label = result.names.get(cls, f"class-{cls}")
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), GREEN, 2)
-            draw_label(frame, f"{label} {conf:.2f}", x1, y1, GREEN)
-
-            custom_count += 1
-            total_conf += conf
-            total_det += 1
-
-    # ---- Pretrained Model (RED) ----
-    if pretrained_result.boxes is not None:
-        for box in pretrained_result.boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            conf = float(box.conf[0])
-            cls = int(box.cls[0])
-            label = pretrained_result.names[cls]
-
-            cv2.rectangle(frame, (x1, y1), (x2, y2), RED, 2)
-            draw_label(frame, f"{label} {conf:.2f}", x1, y1, RED)
-
-            other_count += 1
-            total_conf += conf
-            total_det += 1
-
-    avg_conf = (total_conf / total_det) * 100 if total_det else 0
-
-    return avg_conf, total_det, custom_count, other_count
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            draw_label(frame, f"{label} {conf:.2f}", x1, y1, color)
+            count += 1
+    return count
 
 
 # ---------- UI PANEL ----------
@@ -95,50 +77,69 @@ def draw_stats(frame, total, custom, other, acc):
 
 
 # ---------- MAIN ----------
+def parse_args():
+    parser = argparse.ArgumentParser(description="Dual-model YOLOv10 demo.")
+    parser.add_argument("--weights", default=None,
+                        help="Custom model path. Defaults to newest runs/**/best.pt.")
+    parser.add_argument("--camera", type=int, default=0, help="Camera device index.")
+    parser.add_argument("--conf", type=float, default=0.5, help="Detection confidence threshold.")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
     # Load custom model
-    model_path = find_latest_model()
+    model_path = args.weights or find_latest_model()
 
     if model_path:
         print(f"Using custom model: {model_path}")
         custom_model = YOLO(model_path)
     else:
-        print("No custom model found. Using default.")
+        print("No custom model found under runs/. Using pretrained for both.")
         custom_model = YOLO("yolov10n.pt")
 
     # Pretrained model
     pretrained_model = YOLO("yolov10n.pt")
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
-        print("Camera error")
-        return
+        raise SystemExit(f"Could not open camera {args.camera}.")
 
     print("Press 'q' to exit")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Camera read failed.")
+                break
 
-        # Run models
-        custom_result = custom_model(frame, conf=0.5, verbose=False)[0]
-        pretrained_result = pretrained_model(frame, conf=0.5, verbose=False)[0]
+            # Run models
+            custom_result = custom_model(frame, conf=args.conf, verbose=False)[0]
+            pretrained_result = pretrained_model(frame, conf=args.conf, verbose=False)[0]
 
-        # Draw everything
-        acc, total, custom, other = draw_detections(
-            frame, custom_result, pretrained_result
-        )
+            custom_count = draw_boxes(frame, custom_result, GREEN)
+            other_count = draw_boxes(frame, pretrained_result, RED)
 
-        draw_stats(frame, total, custom, other, acc)
+            total = custom_count + other_count
+            all_confs = []
+            for res in (custom_result, pretrained_result):
+                if res.boxes is not None:
+                    all_confs.extend(float(c) for c in res.boxes.conf)
+            avg_conf = (sum(all_confs) / len(all_confs)) * 100 if all_confs else 0
 
-        cv2.imshow("YOLO Detection", frame)
+            draw_stats(frame, total, custom_count, other_count, avg_conf)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+            cv2.imshow("YOLO Detection", frame)
 
-    cap.release()
-    cv2.destroyAllWindows()
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

@@ -8,8 +8,11 @@ tracked with a trained YOLOv10 model. Two events are watched for:
   PICK  - a tracked product leaves the shelf   -> quantity added to the cart
   PLACE - a tracked product returns to the shelf -> quantity removed from cart
 
-The cart state is synced to MongoDB so the Next.js UI (deployed on Vercel)
-can display it. Run this script on the machine that has the camera.
+The cart state is synced to MongoDB so the Next.js UI can display it.
+Run this script on the machine that has the camera.
+
+If the cart is cleared from the web UI, this app picks up the change
+(via a version counter in MongoDB) and resets its internal cart too.
 
 Usage:
   python smart_shelf.py --display                 # show the live camera view
@@ -29,7 +32,6 @@ import os
 os.environ["YOLO_AUTOINSTALL"] = "false"
 
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,11 +39,12 @@ import cv2
 import yaml
 from ultralytics import YOLO
 
+from event_detector import EventDetector
+
 GREEN = (0, 255, 0)
 RED = (0, 0, 255)
 WHITE = (255, 255, 255)
 GRAY = (160, 160, 160)
-
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
@@ -118,84 +121,16 @@ def load_class_names(data_yaml):
 
 
 # --------------------------------------------------------------------------
-# Event detection: turn raw tracks into PICK / PLACE events
-# --------------------------------------------------------------------------
-class EventDetector:
-    """Compares tracked objects frame-to-frame and emits cart events.
-
-    Every stable track id represents one physical item on the shelf.
-      - An item that disappears -> PICK  (cart + 1)
-      - A brand-new item that becomes stable -> PLACE (cart - 1)
-    The first `warmup` frames build the baseline shelf; no events fire then.
-    """
-
-    def __init__(self, class_names, stability_frames, removal_frames, warmup_frames):
-        self.class_names = class_names
-        self.stability = stability_frames
-        self.removal = removal_frames
-        self.warmup = warmup_frames
-        self.frame_count = 0
-        self.seen = {}  # track_id -> state dict
-        self.cart = defaultdict(int)  # class_name -> quantity
-
-    def update(self, active):
-        """active: {track_id: class_id}. Returns list of event dicts."""
-        self.frame_count += 1
-        current = set(active.keys())
-        events = []
-        in_warmup = self.frame_count <= self.warmup
-
-        # New / still-present objects
-        for tid, cls in active.items():
-            if tid not in self.seen:
-                self.seen[tid] = {
-                    "cls": cls,
-                    "first_seen": self.frame_count,
-                    "appeared": 1,
-                    "missing": 0,
-                    "baseline": self.frame_count <= self.warmup,
-                }
-            else:
-                self.seen[tid]["missing"] = 0
-                self.seen[tid]["appeared"] += 1
-
-        # Objects absent this frame
-        for tid, st in self.seen.items():
-            if tid not in current:
-                st["missing"] += 1
-
-        # New object became stable -> it was placed back on the shelf
-        for tid, st in self.seen.items():
-            if not st["baseline"] and st["appeared"] == self.stability:
-                st["baseline"] = True
-                if not in_warmup:
-                    name = self.class_names.get(st["cls"], f"class-{st['cls']}")
-                    self.cart[name] = max(0, self.cart[name] - 1)
-                    events.append({"type": "place", "product": name, "quantity": 1})
-
-        # Object gone long enough -> it was picked up
-        for tid in list(self.seen.keys()):
-            st = self.seen[tid]
-            if st["missing"] >= self.removal and st["appeared"] >= self.stability:
-                name = self.class_names.get(st["cls"], f"class-{st['cls']}")
-                self.cart[name] += 1
-                events.append({"type": "pick", "product": name, "quantity": 1})
-                del self.seen[tid]
-
-        return events
-
-    def cart_items(self):
-        return [
-            {"name": name, "quantity": qty}
-            for name, qty in sorted(self.cart.items())
-            if qty > 0
-        ]
-
-
-# --------------------------------------------------------------------------
 # MongoDB sync
 # --------------------------------------------------------------------------
 class CartStore:
+    """MongoDB-backed cart storage shared with the Next.js UI.
+
+    The cart document carries a `version` counter. Whenever the web UI
+    clears the cart it increments `version`; this app watches that value
+    so a remote clear also empties the in-memory cart here.
+    """
+
     def __init__(self, uri, db_name):
         from pymongo import MongoClient
 
@@ -205,12 +140,16 @@ class CartStore:
         self.event_col = self.db["events"]
         self.event_col.create_index("ts")
 
-    def save_cart(self, items):
+    def save_cart(self, items, version):
         self.cart_col.replace_one(
             {"_id": "current"},
-            {"items": items, "updatedAt": datetime.now(timezone.utc)},
+            {"items": items, "updatedAt": datetime.now(timezone.utc), "version": version},
             upsert=True,
         )
+
+    def get_version(self):
+        doc = self.cart_col.find_one({"_id": "current"}, {"version": 1})
+        return int((doc or {}).get("version", 0))
 
     def heartbeat(self):
         self.cart_col.update_one(
@@ -330,62 +269,112 @@ def main():
     )
 
     last_events = []
-    last_sync = 0.0
     last_heartbeat = 0.0
+    known_version = 0
+    if store is not None:
+        try:
+            known_version = store.get_version()
+            store._last_items = None
+        except Exception as exc:  # noqa: BLE001
+            print(f"[smart-shelf] WARNING: version check failed ({exc}); assuming v0.")
+
     print("[smart-shelf] warming up... point the camera at the loaded shelf.")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("[smart-shelf] Camera read failed.")
-            break
+    fps_smoothed = 0.0
+    prev_time = time.perf_counter()
 
-        result = model.track(
-            frame, persist=True, tracker="bytetrack.yaml", conf=args.conf, verbose=False
-        )[0]
-
-        active = {}
-        if result.boxes is not None and result.boxes.id is not None:
-            ids = result.boxes.id.cpu().tolist()
-            clss = result.boxes.cls.cpu().tolist()
-            active = {int(i): int(c) for i, c in zip(ids, clss)}
-
-        events = detector.update(active)
-        if events:
-            last_events.extend(events)
-            for ev in events:
-                print(f"[smart-shelf] EVENT {ev['type'].upper()}: {ev['product']}")
-
-        # Sync to MongoDB on change or every 2s (heartbeat keeps UI "live")
-        now = time.time()
-        items = detector.cart_items()
-        if store is not None:
-            if items != getattr(store, "_last_items", None):
-                store.save_cart(items)
-                store._last_items = items
-                for ev in events:
-                    store.log_event(ev)
-                last_sync = now
-            elif now - last_heartbeat > 2.0:
-                store.heartbeat()
-                last_heartbeat = now
-
-        if args.display:
-            for box in result.boxes or []:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                conf = float(box.conf[0])
-                cls = int(box.cls[0])
-                tid = int(box.id[0]) if box.id is not None else 0
-                draw_box(frame, x1, y1, x2, y2, class_names.get(cls, "?"), conf, tid)
-            draw_cart(frame, items, last_events)
-
-            cv2.imshow("PayNGo Smart Shelf", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+    running = True
+    try:
+        while running:
+            ret, frame = cap.read()
+            if not ret:
+                print("[smart-shelf] Camera read failed.")
                 break
 
-    cap.release()
-    if args.display:
-        cv2.destroyAllWindows()
+            now = time.perf_counter()
+            inst_fps = 1.0 / max(now - prev_time, 1e-6)
+            fps_smoothed = inst_fps if fps_smoothed == 0 else 0.9 * fps_smoothed + 0.1 * inst_fps
+            prev_time = now
+
+            result = model.track(
+                frame, persist=True, tracker="bytetrack.yaml", conf=args.conf, verbose=False
+            )[0]
+
+            active = {}
+            if result.boxes is not None and result.boxes.id is not None:
+                ids = result.boxes.id.cpu().tolist()
+                clss = result.boxes.cls.cpu().tolist()
+                active = {int(i): int(c) for i, c in zip(ids, clss)}
+
+            events = detector.update(active)
+            if events:
+                last_events.extend(events)
+                for ev in events:
+                    print(f"[smart-shelf] EVENT {ev['type'].upper()}: {ev['product']}")
+
+            # Sync to MongoDB: log every event, save cart on change, heartbeat
+            # every 2s (keeps the UI "live" badge green). Wrapped so a transient
+            # DB hiccup never kills the camera loop.
+            wall_now = time.time()
+            items = detector.cart_items()
+            if store is not None:
+                try:
+                    for ev in events:
+                        store.log_event(ev)
+
+                    if items != getattr(store, "_last_items", None):
+                        store.save_cart(items, known_version)
+                        store._last_items = items
+                        last_heartbeat = wall_now
+                    elif wall_now - last_heartbeat > 2.0:
+                        store.heartbeat()
+                        last_heartbeat = wall_now
+
+                        # Did someone clear the cart from the web UI?
+                        remote_version = store.get_version()
+                        if remote_version != known_version:
+                            known_version = remote_version
+                            detector.reset_cart()
+                            store._last_items = detector.cart_items()
+                            print("[smart-shelf] Cart cleared remotely — resetting local cart.")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[smart-shelf] WARNING: MongoDB sync failed ({exc}); will retry.")
+
+            if args.display:
+                for box in result.boxes or []:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    conf = float(box.conf[0])
+                    cls = int(box.cls[0])
+                    tid = int(box.id[0]) if box.id is not None else 0
+                    draw_box(frame, x1, y1, x2, y2, class_names.get(cls, "?"), conf, tid)
+                draw_cart(frame, items, last_events)
+                cv2.putText(
+                    frame,
+                    f"FPS: {fps_smoothed:.0f}",
+                    (10, frame.shape[0] - 10),
+                    FONT,
+                    0.5,
+                    GRAY,
+                    1,
+                )
+
+                cv2.imshow("PayNGo Smart Shelf", frame)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    running = False
+    except KeyboardInterrupt:
+        print("[smart-shelf] Interrupted by user.")
+    finally:
+        cap.release()
+        if args.display:
+            cv2.destroyAllWindows()
+
+        final_items = detector.cart_items()
+        total = sum(i["quantity"] for i in final_items)
+        print(f"[smart-shelf] Final cart ({total} item(s)):")
+        for it in final_items:
+            print(f"  - {it['name']} x{it['quantity']}")
+        if store is not None:
+            store.client.close()
 
 
 if __name__ == "__main__":
