@@ -75,6 +75,18 @@ def parse_args():
     parser.add_argument("--camera", type=int, default=0, help="Camera device index.")
     parser.add_argument("--conf", type=float, default=0.5, help="Detection confidence threshold.")
     parser.add_argument(
+        "--min-area",
+        type=float,
+        default=0.001,
+        help="Ignore detections smaller than this fraction of the frame (junk filter).",
+    )
+    parser.add_argument(
+        "--perclass-conf",
+        default=None,
+        help="Optional comma list 'class_id:conf' (e.g. '0:0.6,1:0.4') to set "
+             "per-class confidence floors. Overrides --conf for those classes.",
+    )
+    parser.add_argument(
         "--warmup",
         type=float,
         default=3.0,
@@ -296,6 +308,19 @@ def main():
             fps_smoothed = inst_fps if fps_smoothed == 0 else 0.9 * fps_smoothed + 0.1 * inst_fps
             prev_time = now
 
+            # Per-class confidence: base + optional overrides. Building a dict
+            # per frame is cheap and lets weak-but-true classes (far/small)
+            # stay detectable without raising false positives on the easy classes.
+            conf_map = {}
+            if args.perclass_conf:
+                try:
+                    for pair in args.perclass_conf.split(","):
+                        cls_str, conf_str = pair.split(":")
+                        conf_map[int(cls_str)] = float(conf_str)
+                except ValueError:
+                    print("[smart-shelf] WARNING: invalid --perclass-conf; ignoring.")
+                    conf_map = {}
+
             result = model.track(
                 frame, persist=True, tracker="bytetrack.yaml", conf=args.conf, verbose=False
             )[0]
@@ -304,7 +329,21 @@ def main():
             if result.boxes is not None and result.boxes.id is not None:
                 ids = result.boxes.id.cpu().tolist()
                 clss = result.boxes.cls.cpu().tolist()
-                active = {int(i): int(c) for i, c in zip(ids, clss)}
+                confs = result.boxes.conf.cpu().tolist()
+                boxs = result.boxes.xyxy.cpu().tolist()
+                H, W = frame.shape[:2]
+                frame_area = H * W
+                for i, tid in enumerate(ids):
+                    cls = int(clss[i])
+                    conf = float(confs[i])
+                    floor = conf_map.get(cls, args.conf)
+                    if conf < floor:
+                        continue
+                    x1, y1, x2, y2 = boxs[i]
+                    area = max(0.0, (x2 - x1) * (y2 - y1))
+                    if args.min_area > 0 and area / frame_area < args.min_area:
+                        continue
+                    active[int(tid)] = cls
 
             events = detector.update(active)
             if events:

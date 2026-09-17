@@ -1,6 +1,6 @@
 # PayNGo — Smart Shelf Checkout
 
-A webcam is mounted above a shelf. Products placed on the shelf are detected in real time with a custom-trained **YOLOv10** model. When a customer **picks** an item off the shelf it is added to the cart; when the item is **placed back**, it is struck from the cart. The cart — with per-product **prices and a running total** — is stored in **MongoDB** and displayed on a **Next.js** web page (single-user, no auth).
+A webcam is mounted above a shelf. Products placed on the shelf are detected in real time with a custom-trained **YOLOv10** model. When a customer **picks** an item off the shelf it is added to the cart; when the item is **placed back**, it is struck from the cart. The cart — with per-product **prices and a running total** — is stored in **MongoDB** and shown on a **Next.js** web app with a live **POS storefront**, an auth-protected **dashboard** (sales analytics + stock management), and a checkout flow supporting **Cash, UPI and online card payments (Razorpay)**.
 
 Everything runs locally — no Vercel, no cloud.
 
@@ -29,7 +29,10 @@ Everything runs locally — no Vercel, no cloud.
 - Real-time detection + tracking (YOLOv10 + ByteTrack) with warm-up baseline, so shelf contents at startup never fire events.
 - **PICK / PLACE** events with debouncing (`--stability` / `--removal`) to reject flicker.
 - Live cart UI: quantities, per-line prices, grand total, recent-activity feed with relative timestamps, Live/Offline badge.
-- Prices live in [`web/lib/products.ts`](web/lib/products.ts) — add a product there after training it.
+- **Staff accounts**: first-run owner setup, then login-protected dashboard & checkout (bcrypt-hashed passwords, hashed session tokens, login rate-limiting).
+- **Dashboard** (`/dashboard`): revenue stats, daily-sales chart, per-product stock bars with **restock**, stock-activity feed, recent transactions, low-stock warnings.
+- **Checkout** (`/checkout`): Cash, UPI (recorded immediately) or **Card** via **Razorpay** (server-side order creation + signature/webhook verification, stock decremented only once payment is confirmed).
+- Sales automatically decrement inventory stock and feed the analytics (auditable per-transaction stock history).
 - **Remote clear sync**: "Clear cart" in the web UI bumps a version counter; a running `smart_shelf.py` notices within ~2 s and resets its own cart, so both sides agree.
 - Health endpoint at `/api/health` for a quick DB liveness check.
 - Unit-tested event logic (`event_detector.py` is pure Python — no cv2 needed to test).
@@ -42,10 +45,11 @@ Everything runs locally — no Vercel, no cloud.
 | `event_detector.py` | Pure pick/place → cart-event logic (unit-testable, no cv2 import) |
 | `tests/` | Stdlib-`unittest` tests for the event logic |
 | `train.py` | Trains the YOLOv10 model on the custom product dataset |
-| `test_model.py`, `test_images.py` | Model evaluation / visualization helpers |
+| `prepare_dataset.py` | Class-stratified **train/val splitter + dataset analyzer** (run before training for honest metrics) |
+| `test_model.py`, `test_images.py` | Model evaluation (mAP / per-class AP, precision/recall) / visualization helpers |
 | `app.py` | Demo script — dual-model view (custom products green, other objects red) |
 | `cv-ml-core/data/` | Dataset (images + labels) and `dataset.yaml` class config |
-| `web/` | **Next.js UI** (cart page + `/api/cart`, `/api/events`, `/api/health`) |
+| `web/` | **Next.js app** — POS storefront + login, `/dashboard`, `/checkout`, and `api/cart`, `api/events`, `api/health`, `api/transactions`, `api/checkout`, `api/analytics`, `api/inventory`, `api/auth/*`, `api/payments/*` |
 | `yolov10n.pt` | Pretrained YOLOv10 baseline weights |
 
 Trained weights live under `runs/`. By default all scripts pick the newest
@@ -108,22 +112,52 @@ brew services start mongodb-community
 
 ## 2. Web UI (`web/`)
 
-A single page that polls `/api/cart` every 1.5 s and shows the live cart with prices, total item count, **grand total**, and a Live/Offline indicator (the camera app heartbeats the DB every 2 s). Polling pauses while the tab is hidden. Includes a **Clear cart** button and a recent-activity feed.
+Four pages, sharing one local MongoDB:
+
+| Page | URL | Access |
+|------|-----|--------|
+| **POS storefront** | `/` | Public — live cart + recent transactions |
+| **Login / first-run setup** | `/login` | Public — creates the owner account on first run, then signs in |
+| **Dashboard** | `/dashboard` | Auth — analytics, inventory + restock, stock activity, transactions |
+| **Checkout** | `/checkout` | Auth — pay cart with Cash / UPI / Card (Razorpay) |
+
+The storefront polls `/api/cart` every 1.5 s (pausing while the tab is hidden) and
+shows a Live/Offline badge (the camera app heartbeats the DB every 2 s).
+Checkout on the storefront redirects to the auth-protected `/checkout` page.
 
 ### Run locally
 
 ```bash
 cd web
 npm install
-cp .env.local.example .env.local    # already points at local MongoDB
+cp .env.local.example .env.local    # MONGODB_URI already points at local MongoDB
 npm run dev                         # http://localhost:3000
 ```
+
+First visit: create the owner account on `/login`, then open `/dashboard` → **Set up
+inventory** with an opening stock to seed the products collection.
 
 | Variable | Purpose |
 |----------|---------|
 | `MONGODB_URI` | MongoDB connection string used by the API routes |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | (optional) enable online **Card** payments |
+| `RAZORPAY_WEBHOOK_SECRET` | (optional) verify Razorpay webhook events |
 
 The UI reads and the camera app writes the same local MongoDB — that's the only connection between them.
+
+### Online card payments (Razorpay)
+
+To enable the **Card** method on `/checkout`:
+
+1. Create a Razorpay account (test mode is fine) and put the key id / secret in
+   `web/.env.local`.
+2. Verify order & signature server-side — already wired in
+   `api/payments/create-order` and `api/payments/verify`.
+3. Optional but recommended: set `RAZORPAY_WEBHOOK_SECRET` and register
+   `api/payments/webhook` with an internet-reachable tunnel so a payment is
+   finalized even if the customer closes the browser before verification.
+
+Without these keys the dashboard still works; checkout simply offers Cash + UPI.
 
 ### Adding / pricing products
 
@@ -166,13 +200,20 @@ Sanity checks:
 
 ## 4. Train on a new product
 
-Add product images under `cv-ml-core/data/raw-images/<product>/`, label them, update `cv-ml-core/data/dataset.yaml`, then:
+Add product images under `cv-ml-core/data/raw-images/<product>/`, label them, update `cv-ml-core/data/dataset.yaml`, then rebuild a class-balanced train/val split and train:
 
 ```bash
-python train.py --weights yolov10n.pt --data cv-ml-core/data/dataset.yaml --epochs 20 --batch 16
+source venv/bin/activate
+
+# Stratified split — gives the val set the same class mix as training
+python prepare_dataset.py --data cv-ml-core/data/dataset.yaml --analyze   # inspect first (optional)
+python prepare_dataset.py --data cv-ml-core/data/dataset.yaml --val-ratio 0.2 --seed 42
+
+python train.py --weights yolov10n.pt --data cv-ml-core/data/dataset.yaml --epochs 60 --batch 16 --imgsz 960
 ```
 
 Results are saved under `runs/train/`. `smart_shelf.py` automatically picks the newest `best.pt`.
+Measure accuracy on the holdout with `python test_model.py` (reports mAP, per-class AP, precision/recall).
 
 ## 5. Tests & checks
 

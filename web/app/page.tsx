@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -32,7 +33,8 @@ interface Transaction {
   items: TxnItem[];
   totalItems: number;
   totalAmount: number;
-  paymentMethod: "cash" | "upi";
+  paymentMethod: "cash" | "upi" | "card" | "razorpay";
+  paymentStatus: "pending" | "success" | "failed";
   ts: string;
 }
 
@@ -81,131 +83,10 @@ function txnDate(iso: string): string {
   });
 }
 
-/* ── Checkout modal ─────────────────────────────────────────────── */
-
-function CheckoutModal({
-  items,
-  totalAmount,
-  totalCount,
-  onConfirm,
-  onClose,
-}: {
-  items: CartItem[];
-  totalAmount: number;
-  totalCount: number;
-  onConfirm: (method: "cash" | "upi") => void;
-  onClose: () => void;
-}) {
-  const [method, setMethod] = useState<"cash" | "upi">("cash");
-  const [busy, setBusy] = useState(false);
-
-  const handleConfirm = async () => {
-    setBusy(true);
-    await onConfirm(method);
-    setBusy(false);
-  };
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Checkout</h3>
-        <p className="subtitle">{totalCount} item{totalCount !== 1 ? "s" : ""} in cart</p>
-
-        <div className="modal-items">
-          {items.map((it) => (
-            <div key={it.name} className="modal-item">
-              <span className="modal-item-name">{it.label}</span>
-              <span className="modal-item-detail">
-                {it.quantity} × {it.unitPrice != null ? INR.format(it.unitPrice) : "—"}
-                {it.lineTotal != null && ` = ${INR.format(it.lineTotal)}`}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        <div className="modal-total">
-          <span className="label">Total</span>
-          <span className="amount">{INR.format(totalAmount)}</span>
-        </div>
-
-        <p style={{ fontSize: 13, fontWeight: 600, color: "#64748b", marginBottom: 8 }}>
-          Payment method
-        </p>
-        <div className="modal-pay-methods">
-          <button
-            className={`pay-btn ${method === "cash" ? "selected" : ""}`}
-            onClick={() => setMethod("cash")}
-          >
-            💵 Cash
-          </button>
-          <button
-            className={`pay-btn ${method === "upi" ? "selected" : ""}`}
-            onClick={() => setMethod("upi")}
-          >
-            📱 UPI
-          </button>
-        </div>
-
-        <div className="modal-actions">
-          <button className="btn btn-cancel" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button className="btn btn-confirm" onClick={handleConfirm} disabled={busy}>
-            {busy ? "Processing…" : "Confirm Payment"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Receipt modal ──────────────────────────────────────────────── */
-
-function ReceiptModal({
-  txn,
-  onClose,
-}: {
-  txn: Transaction;
-  onClose: () => void;
-}) {
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal receipt" onClick={(e) => e.stopPropagation()}>
-        <div className="checkmark">✓</div>
-        <h3>Payment Successful</h3>
-        <p className="receipt-id">#{txn._id.slice(-8).toUpperCase()}</p>
-
-        <div className="receipt-items">
-          {txn.items.map((it) => (
-            <div key={it.name} className="receipt-item">
-              <span>
-                {it.label} × {it.quantity}
-              </span>
-              <span>{it.lineTotal != null ? INR.format(it.lineTotal) : "—"}</span>
-            </div>
-          ))}
-          <div className="receipt-divider" />
-          <div className="receipt-total">
-            <span>Total</span>
-            <span>{INR.format(txn.totalAmount)}</span>
-          </div>
-        </div>
-
-        <div className="receipt-meta">
-          {txn.paymentMethod.toUpperCase()} · {txnTime(txn.ts)} · {txnDate(txn.ts)}
-        </div>
-
-        <button className="btn btn-confirm" onClick={onClose} style={{ maxWidth: 200, margin: "0 auto" }}>
-          Done
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /* ── Main page ──────────────────────────────────────────────────── */
 
 export default function Home() {
+  const router = useRouter();
   const [cart, setCart] = useState<CartState>({
     items: [],
     totalCount: 0,
@@ -213,13 +94,19 @@ export default function Home() {
     updatedAt: null,
   });
   const [txns, setTxns] = useState<Transaction[]>([]);
+  const [user, setUser] = useState<{ role: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showCheckout, setShowCheckout] = useState(false);
-  const [receipt, setReceipt] = useState<Transaction | null>(null);
   const [, setTick] = useState(0);
 
   const hiddenRef = useRef(false);
   const prevCartRef = useRef("");
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((r) => r.json())
+      .then((d) => setUser(d.user ?? null))
+      .catch(() => setUser(null));
+  }, []);
 
   const fetchCart = useCallback(async () => {
     try {
@@ -287,33 +174,19 @@ export default function Home() {
     cart.updatedAt != null &&
     Date.now() - new Date(cart.updatedAt).getTime() < LIVE_MS;
 
-  const handleCheckout = async (method: "cash" | "upi") => {
-    try {
-      const res = await fetch("/api/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paymentMethod: method }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Checkout failed");
-      setReceipt(data.transaction);
-      setShowCheckout(false);
-      await Promise.all([fetchCart(), fetchTxns()]);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Checkout failed";
-      setError(msg);
-      setShowCheckout(false);
-    }
-  };
-
   return (
     <div className="pos">
       {/* ── Header ───────────────────────────────────── */}
       <header className="pos-header">
         <h1>PayNGo POS</h1>
-        <div className={`status ${isLive ? "live" : ""}`}>
-          <span className="dot" />
-          {isLive ? "Live" : "Offline"}
+        <div className="header-nav">
+          <div className={`status ${isLive ? "live" : ""}`}>
+            <span className="dot" />
+            {isLive ? "Live" : "Offline"}
+          </div>
+          <button className="header-btn" onClick={() => router.push(user ? "/dashboard" : "/login")}>
+            {user ? "Dashboard" : "Sign in"}
+          </button>
         </div>
       </header>
 
@@ -384,7 +257,7 @@ export default function Home() {
                 <button
                   className="btn btn-checkout"
                   disabled={cart.items.length === 0}
-                  onClick={() => setShowCheckout(true)}
+                  onClick={() => router.push("/checkout")}
                 >
                   Checkout
                 </button>
@@ -406,9 +279,11 @@ export default function Home() {
                 <div key={txn._id} className="txn-card">
                   <div className="txn-card-header">
                     <span className="txn-amount">{INR.format(txn.totalAmount)}</span>
-                    <span className={`txn-method ${txn.paymentMethod}`}>
-                      {txn.paymentMethod === "cash" ? "💵" : "📱"} {txn.paymentMethod}
-                    </span>
+<span className={`txn-method ${txn.paymentMethod}`}>
+  {txn.paymentMethod === "cash" ? "💵" : txn.paymentMethod === "upi" ? "📱" : txn.paymentMethod === "card" ? "💳" : "🛡️"}{" "}
+  {txn.paymentMethod}
+  {txn.paymentStatus !== "success" ? ` · ${txn.paymentStatus}` : ""}
+</span>
                   </div>
                   <div className="txn-items">
                     {txn.items.map((it) => (
@@ -436,20 +311,6 @@ export default function Home() {
           </div>
         </aside>
       </div>
-
-      {/* ── Modals ──────────────────────────────────── */}
-      {showCheckout && (
-        <CheckoutModal
-          items={cart.items}
-          totalAmount={cart.totalAmount}
-          totalCount={cart.totalCount}
-          onConfirm={handleCheckout}
-          onClose={() => setShowCheckout(false)}
-        />
-      )}
-      {receipt && (
-        <ReceiptModal txn={receipt} onClose={() => setReceipt(null)} />
-      )}
     </div>
   );
 }
