@@ -1,4 +1,4 @@
-import mongoose, { Schema, model, models, type InferSchemaType, type Model } from "mongoose";
+import mongoose, { Schema, model, models, type InferSchemaType, type Model, type ClientSession } from "mongoose";
 import { connectToDatabase } from "./mongodb";
 import { PRODUCT_CATALOG } from "./products";
 
@@ -117,7 +117,8 @@ export async function seedProducts(openingStock: number, reset = false): Promise
 export async function recordSale(
   productSlug: string,
   quantity: number,
-  txnId: string
+  txnId: string,
+  session?: ClientSession
 ): Promise<void> {
   await connectToDatabase();
   await ProductModel.findOneAndUpdate(
@@ -126,8 +127,34 @@ export async function recordSale(
       $inc: { stock: -quantity, soldTotal: quantity },
       $push: { stockHistory: { product: productSlug, quantity, type: "sale", txnId, ts: new Date() } },
       $set: { updatedAt: new Date() },
-    }
+    },
+    session ? { session } : {}
   );
+}
+
+/**
+ * Idempotent sale record: only applies if this transaction has not already
+ * been applied to the product (checked atomically on the update filter).
+ * Safe when the verify route and the Razorpay webhook finalize concurrently,
+ * including on standalone servers without multi-document transactions.
+ */
+export async function recordSaleOnce(
+  productSlug: string,
+  quantity: number,
+  txnId: string,
+  session?: ClientSession
+): Promise<boolean> {
+  await connectToDatabase();
+  const res = await ProductModel.updateOne(
+    { slug: productSlug, "stockHistory.txnId": { $ne: txnId } },
+    {
+      $inc: { stock: -quantity, soldTotal: quantity },
+      $push: { stockHistory: { product: productSlug, quantity, type: "sale", txnId, ts: new Date() } },
+      $set: { updatedAt: new Date() },
+    },
+    session ? { session } : {}
+  );
+  return res.modifiedCount > 0;
 }
 
 export async function restockProduct(productSlug: string, quantity: number): Promise<void> {

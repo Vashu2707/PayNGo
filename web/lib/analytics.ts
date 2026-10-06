@@ -46,9 +46,11 @@ export async function getAnalytics(days = 30): Promise<AnalyticsSummary> {
   const todayStart = startOfTodayUTC();
 
   const [txns, todayTxns, products, recentHistory] = await Promise.all([
-    TransactionModel.find({ paymentStatus: { $ne: "failed" } }).lean(),
+    // Only settled payments count as revenue — pending/failed Razorpay
+    // attempts must never inflate the dashboard.
+    TransactionModel.find({ paymentStatus: "success" }).lean(),
     TransactionModel.find({
-      paymentStatus: { $ne: "failed" },
+      paymentStatus: "success",
       ts: { $gte: todayStart },
     }).lean(),
     ProductModel.find().lean(),

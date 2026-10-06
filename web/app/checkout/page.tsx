@@ -48,7 +48,7 @@ declare global {
   interface Window {
     Razorpay: new (options: Record<string, unknown>) => {
       open: () => void;
-      on?: (event: string, cb: () => void) => void;
+      on?: (event: string, cb: (payload?: unknown) => void) => void;
     };
   }
 }
@@ -84,6 +84,35 @@ function txnDate(iso: string): string {
   });
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Polls the server-side payment status. Used when the client-side verify
+ * could not confirm immediately (webhook/API lag) so the UI still converges
+ * on the real outcome instead of showing a dead-end error.
+ */
+async function pollPaymentStatus(orderId: string, tries = 10): Promise<Transaction | null> {
+  for (let i = 0; i < tries; i++) {
+    await sleep(1500);
+    try {
+      const res = await fetch(`/api/payments/status?orderId=${encodeURIComponent(orderId)}`);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.status === "success" && data.transaction) return data.transaction as Transaction;
+      if (data.status === "failed") {
+        throw new Error(data.failureReason || "The payment failed. Please try again.");
+      }
+      if (data.status === "mismatch") {
+        throw new Error("Payment could not be confirmed. Please contact support.");
+      }
+    } catch (err) {
+      if (err instanceof Error && !(err instanceof TypeError)) throw err;
+      // network blip — keep polling
+    }
+  }
+  return null;
+}
+
 export default function CheckoutPage() {
   const router = useRouter();
   const [cart, setCart] = useState<CartState | null>(null);
@@ -117,7 +146,7 @@ export default function CheckoutPage() {
     })();
   }, [router]);
 
-  const payOffline = async (m: "cash" | "upi") => {
+  const payOffline = async (m: "cash") => {
     setBusy(true);
     setError(null);
     try {
@@ -136,7 +165,13 @@ export default function CheckoutPage() {
     }
   };
 
-  const payCard = async () => {
+  /**
+   * Online payments (UPI and card) go through Razorpay — the transaction is
+   * only marked paid after the server confirms it (HMAC + Razorpay API +
+   * webhook). Never trust a client-side "success".
+   */
+  const payOnline = async (preferred: "upi" | "card") => {
+    if (paymentOpenRef.current || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -145,10 +180,29 @@ export default function CheckoutPage() {
       const orderRes = await fetch("/api/payments/create-order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ method: preferred }),
       });
       const orderData = await orderRes.json();
       if (!orderRes.ok) throw new Error(orderData.error || "Could not initialize payment.");
+
+      // The previous attempt already settled (webhook/status won the race).
+      if (orderData.alreadyPaid && orderData.transaction) {
+        setReceipt(orderData.transaction as Transaction);
+        setBusy(false);
+        return;
+      }
+
+      // Money debited, capture in flight — wait for the server's verdict.
+      if (orderData.processing && orderData.orderId) {
+        const settled = await pollPaymentStatus(orderData.orderId);
+        if (settled) {
+          setReceipt(settled);
+        } else {
+          setError("Payment is being confirmed. Press the pay button to re-check — you will not be charged twice.");
+          setBusy(false);
+        }
+        return;
+      }
 
       paymentOpenRef.current = true;
 
@@ -161,10 +215,18 @@ export default function CheckoutPage() {
         order_id: orderData.order.id,
         prefill: { contact: "", email: "" },
         theme: { color: "#16a34a" },
+        // Restrict the checkout to the rail the cashier selected. UPI opens a
+        // UPI-only checkout; card also keeps UPI/netbanking available as a
+        // fallback if the card declines mid-flow.
+        method:
+          preferred === "upi"
+            ? { upi: true, card: false, netbanking: false, wallet: false, paylater: false, emi: false }
+            : { upi: true, card: true, netbanking: true, wallet: true, paylater: false, emi: false },
         modal: {
           ondismiss: () => {
             paymentOpenRef.current = false;
             setBusy(false);
+            setError("Payment cancelled. You can try again — nothing was charged.");
           },
         },
         handler: async (response: {
@@ -180,8 +242,26 @@ export default function CheckoutPage() {
               body: JSON.stringify(response),
             });
             const verifyData = await verifyRes.json();
-            if (!verifyRes.ok) throw new Error(verifyData.error || "Payment was not verified.");
-            setReceipt(verifyData.transaction);
+
+            if (verifyRes.ok && verifyData.ok && verifyData.transaction) {
+              setReceipt(verifyData.transaction as Transaction);
+              return;
+            }
+
+            if (verifyRes.status === 202 || verifyData.pending) {
+              // Server-side confirmation still pending — poll until settled.
+              const settled = await pollPaymentStatus(response.razorpay_order_id);
+              if (settled) {
+                setReceipt(settled);
+                return;
+              }
+              setError(
+                "Payment received but confirmation is delayed. It will settle automatically — press the pay button to re-check."
+              );
+              return;
+            }
+
+            throw new Error(verifyData.error || "Payment was not verified.");
           } catch (err: unknown) {
             setError(err instanceof Error ? err.message : "Payment verification failed.");
           } finally {
@@ -191,13 +271,20 @@ export default function CheckoutPage() {
       };
 
       const rzp = new window.Razorpay(options);
+      rzp.on?.("payment.failed", (payload?: unknown) => {
+        paymentOpenRef.current = false;
+        const err = (payload as { error?: { description?: string; message?: string } })?.error;
+        const reason = err?.description || err?.message || "The payment did not go through.";
+        setError(`${reason} You can retry — no money was debited.`);
+        setBusy(false);
+      });
       rzp.open();
     } catch (err: unknown) {
       paymentOpenRef.current = false;
       setBusy(false);
       const msg = err instanceof Error ? err.message : "Could not start payment.";
       if (msg.toLowerCase().includes("razorpay credentials") || msg.toLowerCase().includes("not configured")) {
-        setError("Online card payments are not configured. Use Cash or UPI, or add Razorpay keys to .env.local.");
+        setError("Online payments are not configured. Use Cash, or add Razorpay keys to .env.local.");
       } else {
         setError(msg);
       }
@@ -205,10 +292,10 @@ export default function CheckoutPage() {
   };
 
   const confirm = useCallback(() => {
-    if (method === "card") {
-      payCard();
+    if (method === "cash") {
+      payOffline("cash");
     } else {
-      payOffline(method);
+      payOnline(method);
     }
   }, [method]);
 
@@ -319,12 +406,19 @@ export default function CheckoutPage() {
             disabled={busy || (cart?.items.length ?? 0) === 0}
             onClick={confirm}
           >
-            {busy ? "Processing…" : method === "card" ? "Pay Online" : `Pay ${INR.format(cart?.totalAmount ?? 0)}`}
+            {busy
+              ? "Processing…"
+              : method === "cash"
+                ? `Pay ${INR.format(cart?.totalAmount ?? 0)}`
+                : method === "upi"
+                  ? "Pay with UPI"
+                  : "Pay Online"}
           </button>
         </div>
 
         <p className="checkout-note">
-          Cash and UPI are recorded as paid on the spot. Card payments go through Razorpay.
+          Cash is recorded on the spot. UPI and card payments go through Razorpay and are only marked
+          paid after the server confirms them.
         </p>
       </div>
     </div>

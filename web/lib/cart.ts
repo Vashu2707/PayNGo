@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { Schema, model, models, type Model, type InferSchemaType } from "mongoose";
 import { connectToDatabase } from "./mongodb";
 import { getProduct, prettyName } from "./products";
@@ -129,8 +130,8 @@ export async function getRawCart(): Promise<{
 }
 
 /**
- * Clear the cart and bump version, returning nothing — used after a
- * transaction has already been recorded.
+ * Clear the cart and bump version, returning nothing — used after
+ * a transaction has already been recorded.
  */
 export async function clearCartRaw(): Promise<void> {
   await connectToDatabase();
@@ -142,4 +143,36 @@ export async function clearCartRaw(): Promise<void> {
     },
     { upsert: true }
   );
+}
+
+/**
+ * Deterministic fingerprint of a cart's contents (name + quantity, order
+ * insensitive). Used to bind a payment attempt to the exact basket it was
+ * created for, and to avoid wiping a *newer* cart when a slow payment
+ * (webhook / retry) finally settles.
+ */
+export function cartFingerprint(items: { name: string; quantity: number }[]): string {
+  const normalized = items
+    .map((i) => `${i.name}:${i.quantity}`)
+    .sort()
+    .join("|");
+  return crypto.createHash("sha256").update(normalized).digest("hex");
+}
+
+/** Clears the cart only when its contents still match `fingerprint`. */
+export async function clearCartIfMatches(fingerprint: string): Promise<boolean> {
+  await connectToDatabase();
+  const cart = await CartModel.findById("current").lean();
+  const items = cart?.items ?? [];
+  if (!items.length) return false;
+  if (cartFingerprint(items) !== fingerprint) return false;
+  await CartModel.findOneAndUpdate(
+    { _id: "current" },
+    {
+      $set: { items: [], updatedAt: new Date() },
+      $inc: { version: 1 },
+    },
+    { upsert: true }
+  );
+  return true;
 }

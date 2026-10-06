@@ -31,7 +31,7 @@ Everything runs locally — no Vercel, no cloud.
 - Live cart UI: quantities, per-line prices, grand total, recent-activity feed with relative timestamps, Live/Offline badge.
 - **Staff accounts**: first-run owner setup, then login-protected dashboard & checkout (bcrypt-hashed passwords, hashed session tokens, login rate-limiting).
 - **Dashboard** (`/dashboard`): revenue stats, daily-sales chart, per-product stock bars with **restock**, stock-activity feed, recent transactions, low-stock warnings.
-- **Checkout** (`/checkout`): Cash, UPI (recorded immediately) or **Card** via **Razorpay** (server-side order creation + signature/webhook verification, stock decremented only once payment is confirmed).
+- **Checkout** (`/checkout`): Cash (recorded on the spot) or **UPI / Card via Razorpay** (server-side order creation + signature/webhook/server-API verification; the payment is only marked paid after the server confirms it, and stock is decremented exactly once).
 - Sales automatically decrement inventory stock and feed the analytics (auditable per-transaction stock history).
 - **Remote clear sync**: "Clear cart" in the web UI bumps a version counter; a running `smart_shelf.py` notices within ~2 s and resets its own cart, so both sides agree.
 - Health endpoint at `/api/health` for a quick DB liveness check.
@@ -157,7 +157,7 @@ To enable the **Card** method on `/checkout`:
    `api/payments/webhook` with an internet-reachable tunnel so a payment is
    finalized even if the customer closes the browser before verification.
 
-Without these keys the dashboard still works; checkout simply offers Cash + UPI.
+Without these keys the dashboard still works; online checkout is disabled and only Cash is offered.
 
 ### Adding / pricing products
 
