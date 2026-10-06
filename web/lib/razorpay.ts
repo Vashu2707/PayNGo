@@ -24,6 +24,28 @@ export function getRazorpayKeyId(): string | null {
   return process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY_ID || null;
 }
 
+export function isRazorpayConfigured(): boolean {
+  return Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET);
+}
+
+export function isWebhookConfigured(): boolean {
+  return Boolean(process.env.RAZORPAY_WEBHOOK_SECRET);
+}
+
+/** Server-side fetch of a payment — used to independently confirm status/amount. */
+export async function fetchRazorpayPayment(paymentId: string) {
+  return getRazorpayClient().payments.fetch(paymentId);
+}
+
+export async function fetchRazorpayOrder(orderId: string) {
+  return getRazorpayClient().orders.fetch(orderId);
+}
+
+export async function fetchRazorpayOrderPayments(orderId: string) {
+  const res = await getRazorpayClient().orders.fetchPayments(orderId);
+  return Array.isArray(res?.items) ? res.items : [];
+}
+
 export async function createRazorpayOrder(opts: {
   amount: number;      // in rupees (whole)
   receipt: string;

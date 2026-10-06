@@ -5,7 +5,7 @@ const userSchema = new Schema(
   {
     username: { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 32 },
     passwordHash: { type: String, required: true },
-    role: { type: String, enum: ["owner", "staff"], default: "owner" },
+    role: { type: String, enum: ["owner"], default: "owner" },
     createdAt: { type: Date, default: Date.now },
   },
   { collection: "users" }
@@ -15,7 +15,7 @@ export interface User {
   _id: string;
   username: string;
   passwordHash: string;
-  role: "owner" | "staff";
+  role: "owner";
   createdAt: Date;
 }
 
@@ -29,7 +29,7 @@ const sessionSchema = new Schema(
     tokenHash: { type: String, required: true, unique: true },
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     username: { type: String, required: true },
-    role: { type: String, enum: ["owner", "staff"], required: true },
+    role: { type: String, enum: ["owner"], required: true },
     expiresAt: { type: Date, required: true },
     createdAt: { type: Date, default: Date.now },
   },

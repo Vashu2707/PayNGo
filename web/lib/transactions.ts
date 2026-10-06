@@ -1,7 +1,8 @@
-import mongoose, { Schema, model, models, type InferSchemaType, type Model } from "mongoose";
+import { Schema, model, models, type InferSchemaType, type Model } from "mongoose";
 import { connectToDatabase } from "./mongodb";
+import { runWithOptionalTransaction } from "./mongo-tx";
 import { getProduct, prettyName } from "./products";
-import { recordSale } from "./inventory";
+import { recordSaleOnce } from "./inventory";
 
 const transactionItemSchema = new Schema(
   {
@@ -23,12 +24,16 @@ const transactionSchema = new Schema(
     paymentStatus: { type: String, enum: ["pending", "success", "failed"], default: "success" },
     razorpayOrderId: { type: String, default: null },
     razorpayPaymentId: { type: String, default: null },
+    userId: { type: String, default: null },
+    cartFingerprint: { type: String, default: null },
     ts: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now },
   },
   { collection: "transactions" }
 );
 
 transactionSchema.index({ ts: -1 });
+transactionSchema.index({ paymentMethod: 1, paymentStatus: 1, userId: 1, cartFingerprint: 1 });
 
 export interface TransactionItem {
   name: string;
@@ -47,6 +52,8 @@ export interface Transaction {
   paymentStatus: "pending" | "success" | "failed";
   razorpayOrderId: string | null;
   razorpayPaymentId: string | null;
+  userId?: string | null;
+  cartFingerprint?: string | null;
   ts: Date;
 }
 
@@ -70,6 +77,8 @@ export async function createTransaction(
     paymentStatus?: "pending" | "success" | "failed";
     razorpayOrderId?: string | null;
     razorpayPaymentId?: string | null;
+    userId?: string | null;
+    cartFingerprint?: string | null;
   } = {}
 ): Promise<CheckoutResult> {
   await connectToDatabase();
@@ -91,53 +100,51 @@ export async function createTransaction(
     0
   );
 
-  const session = await mongoose.startSession();
-  let doc;
-  try {
-    doc = await session.withTransaction(async () => {
-      const created = await TransactionModel.create(
-        [
-          {
-            items,
-            totalItems,
-            totalAmount,
-            paymentMethod,
-            paymentStatus: opts.paymentStatus ?? (paymentMethod === "cash" ? "success" : "success"),
-            razorpayOrderId: opts.razorpayOrderId ?? null,
-            razorpayPaymentId: opts.razorpayPaymentId ?? null,
-          },
-        ],
-        { session }
-      );
-      // Record stock decrements for priced products — only for transactions
-      // already considered paid (cash/upi/card). Razorpay stays "pending" until
-      // the signature is verified in markTransactionSuccess.
-      const isPaid = opts.paymentStatus !== "pending";
-      if (isPaid) {
-        for (const it of items) {
-          if (it.lineTotal != null) {
-            await recordSale(it.name, it.quantity, String(created[0]._id));
-          }
+  const doc = await runWithOptionalTransaction(async (session) => {
+    const created = await TransactionModel.create(
+      [
+        {
+          items,
+          totalItems,
+          totalAmount,
+          paymentMethod,
+          paymentStatus: opts.paymentStatus ?? "success",
+          razorpayOrderId: opts.razorpayOrderId ?? null,
+          razorpayPaymentId: opts.razorpayPaymentId ?? null,
+          userId: opts.userId ?? null,
+          cartFingerprint: opts.cartFingerprint ?? null,
+        },
+      ],
+      { session }
+    );
+    // Record stock decrements for priced products — only for transactions
+    // already considered paid (cash/upi/card). Razorpay stays "pending" until
+    // the payment is verified server-side.
+    const isPaid = (opts.paymentStatus ?? "success") !== "pending";
+    if (isPaid) {
+      for (const it of items) {
+        if (it.lineTotal != null) {
+          await recordSaleOnce(it.name, it.quantity, String(created[0]._id), session);
         }
       }
-      return created[0];
-    });
-  } finally {
-    session.endSession();
-  }
+    }
+    return created[0];
+  });
 
   return {
-    transactionId: String(doc!._id),
+    transactionId: String(doc._id),
     transaction: {
-      _id: String(doc!._id),
+      _id: String(doc._id),
       items,
       totalItems,
       totalAmount,
       paymentMethod,
-      paymentStatus: doc!.paymentStatus,
-      razorpayOrderId: doc!.razorpayOrderId ?? null,
-      razorpayPaymentId: doc!.razorpayPaymentId ?? null,
-      ts: doc!.ts,
+      paymentStatus: doc.paymentStatus,
+      razorpayOrderId: doc.razorpayOrderId ?? null,
+      razorpayPaymentId: doc.razorpayPaymentId ?? null,
+      userId: doc.userId ?? null,
+      cartFingerprint: doc.cartFingerprint ?? null,
+      ts: doc.ts,
     },
   };
 }
@@ -225,56 +232,53 @@ export async function findTransactionById(transactionId: string) {
 }
 
 /**
- * Atomically mark a transaction + its linked stock history entries as paid.
- * Idempotent: if already success, no-op. Returns the transaction.
+ * Atomically mark a transaction as paid and decrement stock for its priced
+ * items. Idempotent on every layer:
+ *  - `paymentStatus: { $ne: "success" }` guards the transaction flip;
+ *  - `recordSaleOnce` guards each product's stock history by txn id;
+ *  - optional `expectedAmountPaise` refuses to finalize on amount mismatch.
+ * Returns `null` when no matching transaction exists or validation fails.
  */
 export async function markTransactionSuccess(
   razorpayOrderId: string,
-  razorpayPaymentId: string
-) {
+  razorpayPaymentId: string,
+  opts: { expectedAmountPaise?: number; source?: string } = {}
+): Promise<(Transaction & { alreadyProcessed?: boolean }) | null> {
   await connectToDatabase();
   const txn = await findTransactionByRazorpayOrderId(razorpayOrderId);
   if (!txn) return null;
+
+  const txnAmountPaise = Math.round(Number(txn.totalAmount) * 100);
+  if (opts.expectedAmountPaise != null && opts.expectedAmountPaise !== txnAmountPaise) {
+    console.error(
+      `[payments] Refusing to finalize order ${razorpayOrderId} (source=${opts.source ?? "unknown"}): ` +
+        `amount mismatch, expected ${opts.expectedAmountPaise} paise, transaction has ${txnAmountPaise} paise.`
+    );
+    return null;
+  }
+
   if (txn.paymentStatus === "success") {
     return { ...txn, alreadyProcessed: true };
   }
-  const mongoose = (await import("mongoose")).default;
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      await TransactionModel.updateOne(
-        { _id: txn._id, paymentStatus: { $ne: "success" } },
-        { $set: { paymentStatus: "success", razorpayPaymentId, updatedAt: new Date() } },
-        { session }
-      );
-      // Decrement stock for each priced item (if not already done).
-      const ProductModel = (await import("./inventory")).ProductModel;
-      for (const it of txn.items) {
-        if (it.lineTotal != null) {
-          await ProductModel.updateOne(
-            {
-              slug: it.name,
-              "stockHistory.txnId": { $ne: txn._id },
-            },
-            {
-              $inc: { stock: -it.quantity, soldTotal: it.quantity },
-              $push: {
-                stockHistory: {
-                  product: it.name,
-                  quantity: it.quantity,
-                  type: "sale",
-                  txnId: txn._id,
-                  ts: new Date(),
-                },
-              },
-            },
-            { session }
-          );
-        }
+
+  const finalizedByUs = await runWithOptionalTransaction(async (session) => {
+    const doc = await TransactionModel.findOneAndUpdate(
+      { _id: txn._id, paymentStatus: { $ne: "success" } },
+      {
+        $set: { paymentStatus: "success", razorpayPaymentId, updatedAt: new Date() },
+      },
+      { new: true, ...(session ? { session } : {}) }
+    ).lean();
+    if (!doc) return false;
+    for (const it of txn.items) {
+      if (it.lineTotal != null) {
+        await recordSaleOnce(it.name, it.quantity, String(txn._id), session);
       }
-    });
-  } finally {
-    session.endSession();
-  }
-  return findTransactionByRazorpayOrderId(razorpayOrderId);
+    }
+    return true;
+  });
+
+  const latest = await findTransactionByRazorpayOrderId(razorpayOrderId);
+  if (!latest) return null;
+  return { ...latest, alreadyProcessed: !finalizedByUs };
 }
