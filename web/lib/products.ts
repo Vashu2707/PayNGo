@@ -14,10 +14,10 @@ export interface ProductInfo {
 }
 
 export const PRODUCT_CATALOG: Record<string, ProductInfo> = {
-  "blue-lays": { slug: "blue-lays", label: "Lays Blue", price: 20 },
-  "green-lays": { slug: "green-lays", label: "Lays Green", price: 20 },
-  "orange-lays": { slug: "orange-lays", label: "Lays Orange", price: 20 },
-  "dark-green-lays": { slug: "dark-green-lays", label: "Lays Dark Green", price: 30 },
+  "blue-lays": { slug: "blue-lays", label: "Lays Blue", price: 1 },
+  "green-lays": { slug: "green-lays", label: "Lays Green", price: 1 },
+  "orange-lays": { slug: "orange-lays", label: "Lays Orange", price: 1 },
+  "dark-green-lays": { slug: "dark-green-lays", label: "Lays Dark Green", price: 1 },
 };
 
 export function prettyName(slug: string): string {
