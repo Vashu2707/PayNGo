@@ -83,8 +83,9 @@ def parse_args():
     parser.add_argument(
         "--perclass-conf",
         default=None,
-        help="Optional comma list 'class_id:conf' (e.g. '0:0.6,1:0.4') to set "
-             "per-class confidence floors. Overrides --conf for those classes.",
+        help="Optional comma list 'class_id:conf' (e.g. '4:0.6,109:0.4'; ids follow "
+             "the cv-ml-core/data/dataset.yaml class order) to set per-class "
+             "confidence floors. Overrides --conf for those classes.",
     )
     parser.add_argument(
         "--warmup",

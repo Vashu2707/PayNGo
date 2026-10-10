@@ -1,6 +1,6 @@
 # PayNGo — Smart Shelf Checkout
 
-A webcam is mounted above a shelf. Products placed on the shelf are detected in real time with a custom-trained **YOLOv10** model. When a customer **picks** an item off the shelf it is added to the cart; when the item is **placed back**, it is struck from the cart. The cart — with per-product **prices and a running total** — is stored in **MongoDB** and shown on a **Next.js** web app with a live **POS storefront**, an auth-protected **dashboard** (sales analytics + stock management), and a checkout flow supporting **Cash, UPI and online card payments (Razorpay)**.
+A webcam is mounted above a shelf. Products placed on the shelf are detected in real time with a custom-trained **YOLOv10** model (113 product classes). When a customer **picks** an item off the shelf it is added to the cart; when the item is **placed back**, it is struck from the cart. The cart — with per-product **prices and a running total** — is stored in **MongoDB** and shown on a **Next.js** web app with a live **POS storefront**, an auth-protected **dashboard** (sales analytics + stock management), and a checkout flow supporting **Cash, UPI and online card payments (Razorpay)**.
 
 Everything runs locally — no Vercel, no cloud.
 
@@ -43,17 +43,22 @@ Everything runs locally — no Vercel, no cloud.
 |------|------------|
 | `smart_shelf.py` | **Local CV app** — camera, detection, tracking, pick/place events, MongoDB sync |
 | `event_detector.py` | Pure pick/place → cart-event logic (unit-testable, no cv2 import) |
-| `tests/` | Stdlib-`unittest` tests for the event logic |
-| `train.py` | Trains the YOLOv10 model on the custom product dataset |
+| `tests/` | Stdlib-`unittest` tests — pick/place event logic + dataset ↔ product-catalog consistency |
+| `ingest_holoselecta.py` | Merges the HoloSelecta VOC zip into the dataset (XML → YOLO labels, appends the new classes to `dataset.yaml`) |
+| `train.py` | Trains the YOLOv10 model on the 113-class product dataset |
+| `train_supervisor.py` | Keeps a training run alive across Apple-Silicon MPS OOM crashes (auto-restart + per-epoch trainer recycle) |
+| `resume_fast.py` | Restart a run at a smaller `imgsz`/`batch` to go faster with less memory |
 | `prepare_dataset.py` | Class-stratified **train/val splitter + dataset analyzer** (run before training for honest metrics) |
 | `test_model.py`, `test_images.py` | Model evaluation (mAP / per-class AP, precision/recall) / visualization helpers |
 | `app.py` | Demo script — dual-model view (custom products green, other objects red) |
-| `cv-ml-core/data/` | Dataset (images + labels) and `dataset.yaml` class config |
+| `cv-ml-core/data/` | `dataset.yaml` (113 classes, tracked) + images/labels (git-ignored, multi-GB) |
 | `web/` | **Next.js app** — POS storefront + login, `/dashboard`, `/checkout`, and `api/cart`, `api/events`, `api/health`, `api/transactions`, `api/checkout`, `api/analytics`, `api/inventory`, `api/auth/*`, `api/payments/*` |
 | `yolov10n.pt` | Pretrained YOLOv10 baseline weights |
 
-Trained weights live under `runs/`. By default all scripts pick the newest
-`runs/**/weights/best.pt`; pass `--weights` to override.
+Trained weights live under `runs/`. By default all scripts (including `train.py`)
+pick the newest `runs/**/weights/best.pt`; pass `--weights` to override.
+Current best run: **`product-detection-v5`** (a 30-epoch fine-tune of v4 — 60
+epochs in the lineage — mAP50 0.302 / mAP50-95 0.204 on the 113-class holdout).
 
 ---
 
@@ -135,7 +140,9 @@ npm run dev                         # http://localhost:3000
 ```
 
 First visit: create the owner account on `/login`, then open `/dashboard` → **Set up
-inventory** with an opening stock to seed the products collection.
+inventory** with an opening stock to seed the products collection. Re-run it
+whenever the product catalog grows (it adds missing products and leaves existing
+stock alone unless you tick **reset**).
 
 | Variable | Purpose |
 |----------|---------|
@@ -161,9 +168,14 @@ Without these keys the dashboard still works; online checkout is disabled and on
 
 ### Adding / pricing products
 
-Class names come from `cv-ml-core/data/dataset.yaml`. Map each class to a label
-and price in `web/lib/products.ts`; unknown products still appear but are
-excluded from the total until priced.
+Class names come from `cv-ml-core/data/dataset.yaml` (113 classes) and
+`web/lib/products.ts` ships a catalog entry for **every one of them** — label,
+price, cart emoji. After editing the dataset, run
+`python -m unittest discover -s tests` to confirm the catalog still covers
+every class, then update the affected entry (labels are derived from the class
+name; prices for new classes default to a placeholder ₹10 — replace them
+before going live, since checkout refuses a zero total). Unknown products still
+appear in the cart but are excluded from the total until priced.
 
 ---
 
@@ -209,10 +221,13 @@ source venv/bin/activate
 python prepare_dataset.py --data cv-ml-core/data/dataset.yaml --analyze   # inspect first (optional)
 python prepare_dataset.py --data cv-ml-core/data/dataset.yaml --val-ratio 0.2 --seed 42
 
-python train.py --weights yolov10n.pt --data cv-ml-core/data/dataset.yaml --epochs 60 --batch 16 --imgsz 960
+python train.py --data cv-ml-core/data/dataset.yaml --epochs 60 --batch 16 --imgsz 960
+# optional: --weights yolov10n.pt to start from the pretrained baseline
+#           (default is the newest runs/**/weights/best.pt, i.e. fine-tuning)
 ```
 
-Results are saved under `runs/train/`. `smart_shelf.py` automatically picks the newest `best.pt`.
+Results are saved under `runs/` (ultralytics nests them, e.g.
+`runs/detect/runs/train/<name>`). `smart_shelf.py` automatically picks the newest `best.pt`.
 Measure accuracy on the holdout with `python test_model.py` (reports mAP, per-class AP, precision/recall).
 
 ## 5. Tests & checks

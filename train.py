@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Train YOLOv10 on the custom product dataset with accuracy-first hyperparameters.
+Train YOLOv10 on the 113-class retail product dataset (accuracy-first config).
 
 Accuracy improvements over the previous config:
   * Larger training resolution (imgsz=960) with multi-scale jitter — small
@@ -14,8 +14,12 @@ Accuracy improvements over the previous config:
     convergence on tiny sets, so it's configurable — set --patience 0 for none).
 
 Usage:
-  python train.py --weights yolov10n.pt --data cv-ml-core/data/dataset.yaml \
+  python train.py --data cv-ml-core/data/dataset.yaml \
       --epochs 60 --batch 16 --imgsz 960
+
+`--weights` defaults to the newest trained `runs/**/weights/best.pt`
+(currently product-detection-v5) and falls back to the `yolov10n.pt` baseline
+when no run exists yet — pass it explicitly to start from a different model.
 
 `--device` defaults to CUDA if available, else CPU. `workers` is forced to 0 on
 macOS only (avoids the macOS multiprocessing crash); pass `--workers N` to
@@ -42,10 +46,11 @@ warnings.filterwarnings("ignore", message=".*pi-heif.*")
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Train YOLOv10 on the custom product dataset (accuracy-first config)."
+        description="Train YOLOv10 on the 113-class product dataset (accuracy-first config)."
     )
     parser.add_argument(
-        "--weights", default="yolov10n.pt", help="Pretrained YOLOv10 weights file."
+        "--weights", default=None,
+        help="Starting weights. Default: newest runs/**/weights/best.pt, else yolov10n.pt.",
     )
     parser.add_argument(
         "--data", default="cv-ml-core/data/dataset.yaml", help="YOLO data YAML."
@@ -59,7 +64,9 @@ def parse_arguments():
     parser.add_argument(
         "--project", default="runs/train", help="Folder to save training results."
     )
-    parser.add_argument("--name", default="product-detection", help="Training run name.")
+    parser.add_argument(
+        "--name", default="product-detection-v6", help="Training run name."
+    )
     parser.add_argument(
         "--device", default="auto", help="Device: auto, 0, or cpu."
     )
@@ -70,6 +77,15 @@ def parse_arguments():
     parser.add_argument(
         "--conf", action="store_true",
         help="Run recall/precision validation at the end and print a table.",
+    )
+    parser.add_argument(
+        "--resume", nargs="?", const=True, default=None,
+        help="Continue from a run checkpoint: path to last.pt, or bare flag to auto-detect.",
+    )
+    parser.add_argument(
+        "--lr0", type=float, default=0.01,
+        help="Initial LR. Lower it (e.g. 0.001) when fine-tuning from a converged run "
+             "for extra epochs, so the cosine restart doesn't disrupt the learned weights.",
     )
     return parser.parse_args()
 
@@ -82,7 +98,7 @@ def resolve_device(device_arg: str) -> str:
         return "0" if torch.cuda.is_available() else "cpu"
     if device_arg == "cpu":
         return "cpu"
-    if not torch.cuda.is_available():
+    if device_arg.isdigit() and not torch.cuda.is_available():
         print("No CUDA device detected; using CPU for training.")
         return "cpu"
     return device_arg
@@ -97,9 +113,57 @@ def resolve_workers(args) -> int:
     return 8
 
 
+def resolve_weights(weights_arg) -> Path:
+    """Pick the starting weights: explicit --weights, newest trained best.pt,
+    else the pretrained baseline (matches how smart_shelf.py / app.py behave)."""
+    if weights_arg:
+        return Path(weights_arg)
+    trained = [p for p in Path("runs").rglob("weights/best.pt") if p.is_file()]
+    if trained:
+        latest = max(trained, key=lambda p: p.stat().st_mtime)
+        print(f"[train] no --weights given; fine-tuning from newest {latest}")
+        return latest
+    baseline = Path("yolov10n.pt")
+    print("[train] no trained weights found; starting from yolov10n.pt baseline")
+    return baseline
+
+
+def register_mps_cache_guard(model, every: int = 50):
+    """Flush the MPS allocator cache during training.
+
+    On Apple Silicon the MPS allocator keeps freed blocks reserved instead of
+    returning them, so the driver high-water mark ratchets up every iteration
+    (observed ~26 MB/iter at 960px) until the process hits the 20 GiB MPS cap
+    and dies mid-run. Dropping unreferenced blocks on a timer keeps the cached
+    pool reusable so long runs survive. Only active on `device=mps`.
+    """
+    import gc
+
+    state = {"n": 0}
+
+    def flush(trainer):
+        state["n"] += 1
+        if state["n"] % every == 0:
+            gc.collect()
+            torch.mps.empty_cache()
+
+    model.add_callback("on_train_batch_end", flush)
+    print(f"[train] mps cache guard active (every {every} batches)")
+
+
 def main():
     args = parse_arguments()
-    weights_path = Path(args.weights)
+
+    # Something in this environment (jetsam, another shell's pkill, tooling
+    # cleanup) periodically SIGTERMs long-running python processes. The
+    # supervisor's crash-restart loop treats a signal death as lost progress,
+    # so swallow SIGTERM: the only sanctioned stop is the supervisor's SIGKILL
+    # after a completed epoch (see train_supervisor.py --restart-every).
+    import signal
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+    weights_path = resolve_weights(args.weights)
     data_path = Path(args.data)
 
     if not weights_path.exists():
@@ -116,6 +180,9 @@ def main():
     print(f"[train] weights={weights_path.name} device={device} workers={workers} epochs={args.epochs}")
     print(f"[train] imgsz={args.imgsz} batch={args.batch} patience={args.patience}")
 
+    if device == "mps" and torch is not None and hasattr(torch, "mps"):
+        register_mps_cache_guard(model)
+
     # NOTE: `augment=True` is the correct flag here. The explicit hsv/geometric
     # overrides are kept minimal and physically-plausible so the model learns
     # invariant, accurate features instead of memorizing the exact shelf photos.
@@ -126,6 +193,7 @@ def main():
         imgsz=args.imgsz,
         project=str(project),
         name=args.name,
+        resume=args.resume or False,
         device=device,
         workers=workers,
         cache=False,                 # avoid stale-cache file issues on macOS
@@ -149,7 +217,7 @@ def main():
         # ── Optimizer / schedule ─────────────────────────────────────────
         optimizer="auto",            # AdamW on small datasets, SGD on large
         cos_lr=True,                 # cosine annealing — better final convergence
-        lr0=0.01,
+        lr0=args.lr0,
         lrf=0.01,
         # ── Regularization ───────────────────────────────────────────────
         weight_decay=0.0005,
@@ -161,7 +229,11 @@ def main():
     )
 
     print("[train] Training complete.")
-    print(f"[train] Results in: {project / args.name}")
+    # ultralytics may re-root a relative --project (runs/detect/…), so print the
+    # directory the trainer actually wrote to rather than the requested one.
+    trainer = getattr(model, "trainer", None)
+    save_dir = Path(getattr(trainer, "save_dir", None) or (project / args.name))
+    print(f"[train] Results in: {save_dir}")
     print("[train] To evaluate on the holdout:  python test_model.py")
 
 

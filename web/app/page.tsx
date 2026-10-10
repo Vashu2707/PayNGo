@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { emojiFor } from "@/lib/products";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -48,13 +49,6 @@ const INR = new Intl.NumberFormat("en-IN", {
   currency: "INR",
   maximumFractionDigits: 0,
 });
-
-const PRODUCT_EMOJI: Record<string, string> = {
-  "blue-lays": "🔵",
-  "green-lays": "🟢",
-  "orange-lays": "🟠",
-  "dark-green-lays": "🟤",
-};
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -215,7 +209,7 @@ export default function Home() {
                 {cart.items.map((it) => (
                   <div key={it.name} className="cart-item">
                     <div className={`cart-item-icon product-icon ${it.name}`}>
-                      {PRODUCT_EMOJI[it.name] ?? "📦"}
+                      {emojiFor(it.name)}
                     </div>
                     <div className="cart-item-info">
                       <div className="cart-item-name">{it.label}</div>

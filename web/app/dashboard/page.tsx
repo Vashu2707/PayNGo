@@ -213,7 +213,11 @@ export default function DashboardPage() {
                   {lowStock.length}
                 </div>
                 <div className="stat-sub">
-                  {lowStock.length ? lowStock.map((p) => p.label).join(", ") : "All good"}
+                  {lowStock.length
+                    ? `${lowStock.slice(0, 6).map((p) => p.label).join(", ")}${
+                        lowStock.length > 6 ? ` +${lowStock.length - 6} more` : ""
+                      }`
+                    : "All good"}
                 </div>
               </div>
             </div>

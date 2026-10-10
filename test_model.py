@@ -9,8 +9,10 @@ This computes, at a chosen IoU threshold:
   * False positive / false negative breakdown
 
 Usage:
-  python test_model.py --model runs/train/product-detection/weights/best.pt \
+  python test_model.py --model runs/detect/runs/train/product-detection-v5/weights/best.pt \
       --data cv-ml-core/data/dataset.yaml --iou 0.5 --conf 0.5
+
+`--model` defaults to the newest runs/**/weights/best.pt.
 """
 
 import argparse
@@ -30,14 +32,38 @@ def parse_args():
         ws = [p for p in Path("runs").rglob("weights/best.pt") if p.is_file()]
         return str(max(ws, key=lambda p: p.stat().st_mtime)) if ws else None
 
+    def train_imgsz(model_path):
+        """Eval at the resolution the run was trained at (from its args.yaml),
+        so the metrics aren't skewed by a train/val resolution mismatch."""
+        if not model_path:
+            return 640
+        args_yaml = Path(model_path).resolve().parent.parent / "args.yaml"
+        if args_yaml.exists():
+            try:
+                import yaml
+
+                cfg = yaml.safe_load(args_yaml.read_text()) or {}
+                size = cfg.get("imgsz")
+                if isinstance(size, list):
+                    size = size[0] if size else None
+                if isinstance(size, (int, float)) and int(size) > 0:
+                    return int(size)
+            except Exception:
+                pass
+        return 640
+
+    default_model = latest_model()
     p = argparse.ArgumentParser(description="Evaluate model accuracy on the val split.")
-    p.add_argument("--model", default=latest_model(), help="Path to best.pt.")
+    p.add_argument("--model", default=default_model, help="Path to best.pt.")
     p.add_argument("--data", default="cv-ml-core/data/dataset.yaml", help="YOLO dataset root dir.")
     p.add_argument("--root", default="cv-ml-core/data/yolo-dataset", help="YOLO dataset root.")
     p.add_argument("--conf", type=float, default=0.5)
     p.add_argument("--iou", type=float, default=0.5)
     p.add_argument("--subset", default="val", choices=["val", "train"])
-    p.add_argument("--imgsz", type=int, default=960, help="Inference resolution.")
+    p.add_argument(
+        "--imgsz", type=int, default=train_imgsz(default_model),
+        help="Inference resolution (defaults to the run's training imgsz).",
+    )
     return p.parse_args()
 
 
@@ -147,17 +173,19 @@ def main():
         r = s["tp"] / s["gts"] if s["gts"] else 0.0
         rows.append((cls, s["gts"], s["tp"], s["fp"], s["fn"], p, r))
 
-    header = f"{'class':<16} {'GT':>4} {'TP':>4} {'FP':>4} {'FN':>4} {'Prec':>6} {'Rec':>6}"
+    # HoloSelecta class names run up to ~34 chars — size the column to fit.
+    name_w = max([16] + [len(str(class_names.get(c, c))) for c in all_classes])
+    header = f"{'class':<{name_w}} {'GT':>4} {'TP':>4} {'FP':>4} {'FN':>4} {'Prec':>6} {'Rec':>6}"
     print(header)
     print("-" * len(header))
     tot_gt = tot_tp = tot_fp = tot_fn = 0
     for cls, gt, tp, fp, fn, p, r in rows:
         name = class_names.get(cls, str(cls))
-        print(f"{name:<16} {gt:>4} {tp:>4} {fp:>4} {fn:>4} {p:>6.3f} {r:>6.3f}")
+        print(f"{name:<{name_w}} {gt:>4} {tp:>4} {fp:>4} {fn:>4} {p:>6.3f} {r:>6.3f}")
         tot_gt += gt; tot_tp += tp; tot_fp += fp; tot_fn += fn
     if tot_gt:
         print("-" * len(header))
-        print(f"{'ALL':<16} {tot_gt:>4} {tot_tp:>4} {tot_fp:>4} {tot_fn:>4} "
+        print(f"{'ALL':<{name_w}} {tot_gt:>4} {tot_tp:>4} {tot_fp:>4} {tot_fn:>4} "
               f"{tot_tp / (tot_tp + tot_fp) if tot_tp + tot_fp else 0:>6.3f} "
               f"{tot_tp / tot_gt:>6.3f}")
 
@@ -187,7 +215,7 @@ def main():
             interp += (max(precs[i] for i in idx) if idx else 0.0) / 11
         aps.append(interp)
         name = class_names.get(cls, str(cls))
-        print(f"  AP@{args.iou} {name:<16} {interp:.3f}")
+        print(f"  AP@{args.iou} {name:<{name_w}} {interp:.3f}")
     mAP = float(np.mean(aps)) if aps else 0.0
     print(f"\n  mAP@{args.iou}: {mAP:.3f}")
     return mAP

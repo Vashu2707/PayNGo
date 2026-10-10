@@ -17,13 +17,23 @@ ENV/
 *.temp
 *.bak
 
-# Keep data and weights if they are needed for inference
+# Baseline weights are kept so a fresh clone can run inference
 !yolov10n.pt
-!cv-ml-core/data/**
 
-# Ignore run artifacts
+# Ignore run artifacts (trained weights live under runs/)
 runs/
 
-data/
+# Root data/ scratch dir only — note: a bare `data/` rule here also matches
+# cv-ml-core/data and silently hides dataset.yaml from git.
+/data/
+
+# The dataset itself is multi-GB; only cv-ml-core/data/dataset.yaml is tracked
+cv-ml-core/data/yolo-dataset/
+cv-ml-core/data/raw-images/
+cv-ml-core/data/New_data/
+cv-ml-core/data/training data/
 
 test_images/
+
+# Next.js incremental build cache (regenerated on every `next build`)
+*.tsbuildinfo

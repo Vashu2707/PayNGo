@@ -67,7 +67,21 @@ def read_labels(label_path: Path):
     return cls_counter, rows
 
 
-def analyze(source: Path):
+def load_class_names(data_path: Path):
+    """{class_id: name} from dataset.yaml, or None when it can't be read."""
+    try:
+        import yaml
+
+        cfg = yaml.safe_load(data_path.read_text(encoding="utf-8")) or {}
+        names = cfg.get("names") or {}
+        if isinstance(names, list):
+            return {i: str(n) for i, n in enumerate(names)}
+        return {int(k): str(v) for k, v in names.items()}
+    except Exception:
+        return None
+
+
+def analyze(source: Path, class_names=None):
     total_classes = Counter()
     total_instances = 0
     bad = []
@@ -99,9 +113,19 @@ def analyze(source: Path):
         )
         print(f"  {subset}: {len(imgs)} images, {inst} labeled instances")
     print(f"  total instances: {total_instances}")
-    print("  class distribution (label id -> count):")
+    print("  class distribution (id  name -> instances):")
     for c in sorted(total_classes):
-        print(f"    class {c}: {total_classes[c]}")
+        name = (class_names or {}).get(c, "?")
+        print(f"    {c:>4}  {name:<34} {total_classes[c]}")
+    if class_names:
+        unknown = sorted(c for c in total_classes if c not in class_names)
+        if unknown:
+            print(f"  WARNING: label ids missing from dataset.yaml: {unknown}")
+        unseen = [class_names[c] for c in sorted(class_names) if c not in total_classes]
+        if unseen:
+            shown = ", ".join(unseen[:10])
+            more = f" (+{len(unseen) - 10} more)" if len(unseen) > 10 else ""
+            print(f"  WARNING: {len(unseen)} class(es) with no instances: {shown}{more}")
     if bad:
         print("  WARNING: images with missing/empty labels:")
         for p, reason in bad[:10]:
@@ -168,9 +192,27 @@ def split(source: Path, val_ratio: float, seed: int):
 
     val_set: set[Path] = set()
     for dom, imgs in buckets.items():
-        n_val = max(1, round(len(imgs) * val_ratio))
+        n_val = min(max(1, round(len(imgs) * val_ratio)), len(imgs) - 1)
         rng.shuffle(imgs)
         val_set.update(imgs[:n_val])
+
+    # Coverage pass: a class with every instance in the val split is never
+    # trained on (and its AP is meaningless); a class with no val image has no
+    # per-class metric at all. Guarantee both whenever the data allows it.
+    by_class: dict[int, list[Path]] = {}
+    for img, text in labeled:
+        for line in text.splitlines():
+            parts = line.split()
+            if parts:
+                by_class.setdefault(int(parts[0]), []).append(img)
+    for cls, imgs in by_class.items():
+        uniq = list(dict.fromkeys(imgs))
+        if not any(i not in val_set for i in uniq):
+            val_set.discard(uniq[0])
+    for cls, imgs in by_class.items():
+        uniq = list(dict.fromkeys(imgs))
+        if len(uniq) > 1 and not any(i in val_set for i in uniq):
+            val_set.add(uniq[-1])
 
     # Phase 0 — clear any leftover .tmp staging files from a previous run.
     for subset in ("train", "val"):
@@ -232,7 +274,7 @@ def main():
         sys.exit(f"Source dataset not found: {source}")
 
     if args.analyze:
-        analyze(source)
+        analyze(source, load_class_names(Path(args.data)))
         return
 
     # Verify image <=> label pairing before splitting
@@ -244,7 +286,7 @@ def main():
             print(f"WARNING: missing labels for {img.relative_to(source)})")
 
     split(source, args.val_ratio, args.seed)
-    analyze(source)
+    analyze(source, load_class_names(Path(args.data)))
 
 
 if __name__ == "__main__":
