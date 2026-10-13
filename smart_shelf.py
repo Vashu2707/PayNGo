@@ -16,8 +16,16 @@ If the cart is cleared from the web UI, this app picks up the change
 
 Usage:
   python smart_shelf.py --display                 # show the live camera view
-  python smart_shelf.py --camera 1 --conf 0.45    # tweak camera / confidence
+  python smart_shelf.py --camera 1 --conf 0.25    # tweak camera / confidence
   python smart_shelf.py --no-mongo                # run without syncing
+
+Confidence:
+  The default --conf is 0.25 on purpose. Measured on the holdout, 0.5 lets
+  only weak classes barely reach 0.5 recall, while 0.25 lifts overall recall
+  from 0.35 to 0.54 at 0.63 precision. A detection that flickers under the
+  gate never gives ByteTrack a stable track, so the pick/place debounce
+  never fires. Raise --conf only if the lower gate floods the view with
+  false positives on your shelf.
 
 Config (.env):
   MONGO_URI   mongodb+srv://user:pass@cluster.mongodb.net/payngo
@@ -70,10 +78,16 @@ def parse_args():
         help="Path to trained model. Defaults to the newest runs/**/weights/best.pt",
     )
     parser.add_argument(
-        "--data", default="cv-ml-core/data/dataset.yaml", help="Dataset YAML for class names."
+        "--data", default="cv-ml-core/data/dataset-v2.yaml", help="Dataset YAML for class names."
     )
     parser.add_argument("--camera", type=int, default=0, help="Camera device index.")
-    parser.add_argument("--conf", type=float, default=0.5, help="Detection confidence threshold.")
+    parser.add_argument(
+        "--conf",
+        type=float,
+        default=0.25,
+        help="Detection confidence threshold (default 0.25 — see the note in the "
+             "module docstring before raising it).",
+    )
     parser.add_argument(
         "--min-area",
         type=float,
@@ -84,7 +98,7 @@ def parse_args():
         "--perclass-conf",
         default=None,
         help="Optional comma list 'class_id:conf' (e.g. '4:0.6,109:0.4'; ids follow "
-             "the cv-ml-core/data/dataset.yaml class order) to set per-class "
+             "the cv-ml-core/data/dataset-v2.yaml class order) to set per-class "
              "confidence floors. Overrides --conf for those classes.",
     )
     parser.add_argument(

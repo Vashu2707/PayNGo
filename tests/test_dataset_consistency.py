@@ -1,7 +1,7 @@
 """Cross-check the web product catalog against the YOLO dataset class list.
 
 web/lib/products.ts keys the cart UI, the Mongo product seed and the
-server-side checkout total, so every class in cv-ml-core/data/dataset.yaml
+server-side checkout total, so every class in cv-ml-core/data/dataset-v2.yaml
 must have an entry there (an unpriced class makes checkout reject the cart).
 
 Run from the project root (inside the venv):
@@ -16,12 +16,12 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-DATASET_YAML = ROOT / "cv-ml-core" / "data" / "dataset.yaml"
+DATASET_YAML = ROOT / "cv-ml-core" / "data" / "dataset-v2.yaml"
 CATALOG_TS = ROOT / "web" / "lib" / "products.ts"
 
 
 def load_dataset_classes():
-    """{class_id: class_name} from dataset.yaml, in class-id order."""
+    """{class_id: class_name} from dataset-v2.yaml, in class-id order."""
     names = yaml.safe_load(DATASET_YAML.read_text(encoding="utf-8"))["names"]
     return {int(i): str(n) for i, n in names.items()}
 
@@ -63,13 +63,13 @@ class CatalogConsistencyTests(unittest.TestCase):
         self.assertEqual(sorted(self.classes), list(range(len(self.classes))))
 
     def test_catalog_lists_every_class_in_id_order(self):
-        """CLASS_NAMES must mirror dataset.yaml exactly (order == class id)."""
+        """CLASS_NAMES must mirror dataset-v2.yaml exactly (order == class id)."""
         expected = [self.classes[i] for i in sorted(self.classes)]
         actual = catalog_slugs()
         missing = [n for n in expected if n not in actual]
         extra = [n for n in actual if n not in expected]
         self.assertEqual(missing, [], f"classes missing from products.ts: {missing}")
-        self.assertEqual(extra, [], f"slugs in products.ts unknown to dataset.yaml: {extra}")
+        self.assertEqual(extra, [], f"slugs in products.ts unknown to dataset-v2.yaml: {extra}")
         self.assertEqual(actual, expected, "CLASS_NAMES order no longer matches class ids")
 
     def test_every_class_is_priced(self):

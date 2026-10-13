@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YOLOv10 Product Detection demo (113-class PayNGo catalog)
+YOLOv10 Product Detection demo (PayNGo product catalog)
 GREEN -> Custom trained products (newest runs/**/best.pt)
 RED   -> Other objects (pretrained YOLO)
 

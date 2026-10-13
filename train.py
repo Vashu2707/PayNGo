@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Train YOLOv10 on the 113-class retail product dataset (accuracy-first config).
+Train YOLOv10 on the PayNGo retail product dataset (accuracy-first config).
 
 Accuracy improvements over the previous config:
   * Larger training resolution (imgsz=960) with multi-scale jitter — small
@@ -46,7 +46,7 @@ warnings.filterwarnings("ignore", message=".*pi-heif.*")
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Train YOLOv10 on the 113-class product dataset (accuracy-first config)."
+        description="Train YOLOv10 on the PayNGo product dataset (accuracy-first config)."
     )
     parser.add_argument(
         "--weights", default=None,

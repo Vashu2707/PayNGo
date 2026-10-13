@@ -1,0 +1,21 @@
+train: yolo-v2-dataset/images/train
+val: yolo-v2-dataset/images/val
+names:
+  0: blue-lays
+  1: green-lays
+  2: orange-lays
+  3: dark-green-lays
+  4: parle-g
+  5: britannia-bourbon
+  6: britannia-good-day
+  7: sunfeast-marie-light
+  8: cadbury-dairy-milk
+  9: cadbury-5-star
+  10: cadbury-munch
+  11: nestle-kitkat
+  12: kurkure-masala-munch
+  13: thums-up
+  14: sprite
+  15: fanta
+  16: pepsi
+  17: maggi-2-minute

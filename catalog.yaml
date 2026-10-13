@@ -1,0 +1,151 @@
+# PayNGo product catalog — the products the camera should recognize.
+#
+# This is the single source of truth for the *next* dataset. Order matters:
+# the index of each product below becomes its YOLO class id in
+# cv-ml-core/data/dataset-v2.yaml, which synthesize_products.py writes.
+#
+#   source: existing  -> the class is already in yolo-dataset (real photos of
+#                        your own shelf); its labels are copied into the new
+#                        dataset as-is. The first four entries MUST stay in
+#                        ids 0..3 because those are the ids the old labels use
+#                        (synthesize_products.py asserts this).
+#   query / queries   -> packshots are downloaded from the web for this class.
+#                        The query is what gets typed into an image search, so
+#                        make it specific (pack format, flavour, size).
+#   urls              -> optional: paste direct image URLs here to skip the
+#                        search entirely (useful when a query keeps returning
+#                        lifestyle photos instead of packshots).
+#
+# Rebuild the dataset after any edit:
+#   python synthesize_products.py search --per-product 12
+#   python synthesize_products.py build
+#   python prepare_dataset.py --source cv-ml-core/data/yolo-v2-dataset \
+#       --data cv-ml-core/data/dataset-v2.yaml
+#
+# Prices are whole rupees and are what web/lib/products.ts will need when you
+# cut the app over to this catalog.
+
+products:
+  # --- already photographed on your shelf; do not reorder these four ---
+  - slug: blue-lays
+    label: Lays Blue
+    price: 1
+    source: existing
+
+  - slug: green-lays
+    label: Lays Green
+    price: 1
+    source: existing
+
+  - slug: orange-lays
+    label: Lays Orange
+    price: 1
+    source: existing
+
+  - slug: dark-green-lays
+    label: Lays Dark Green
+    price: 1
+    source: existing
+
+  # --- biscuits ---
+  - slug: parle-g
+    label: Parle-G Biscuit
+    price: 10
+    queries:
+      - "Parle-G biscuits single packet product photo"
+      - "Parle G glucose biscuits pack white background"
+
+  - slug: britannia-bourbon
+    label: Britannia Bourbon
+    price: 30
+    queries:
+      - "Britannia Bourbon biscuits single packet product photo"
+      - "Bourbon chocolate cream biscuit pack white background"
+
+  - slug: britannia-good-day
+    label: Britannia Good Day
+    price: 30
+    queries:
+      - "Britannia Good Day cashew cookies single packet product photo"
+      - "Good Day cashew biscuits pack white background"
+
+  - slug: sunfeast-marie-light
+    label: Sunfeast Marie Light
+    price: 30
+    queries:
+      - "Sunfeast Marie Light biscuits single packet product photo"
+      - "Sunfeast marie light tea biscuit pack white background"
+
+  # --- chocolates ---
+  - slug: cadbury-dairy-milk
+    label: Cadbury Dairy Milk
+    price: 40
+    queries:
+      - "Cadbury Dairy Milk 45g chocolate bar front wrapper"
+      - "Dairy Milk plain chocolate single bar pack photo"
+
+  - slug: cadbury-5-star
+    label: Cadbury 5 Star
+    price: 20
+    queries:
+      - "Cadbury 5 Star 40g chocolate bar front wrapper"
+      - "5 Star gold chocolate single bar pack photo"
+
+  - slug: cadbury-munch
+    label: Cadbury Munch
+    price: 20
+    queries:
+      - "Cadbury Munch chocolate single bar pack product photo"
+      - "Munch chocolate bar purple wrapper white background"
+
+  - slug: nestle-kitkat
+    label: KitKat
+    price: 40
+    queries:
+      - "KitKat 4 finger single pack product photo"
+      - "KitKat chocolate bar wrapper white background"
+
+  # --- chips / namkeen ---
+  - slug: kurkure-masala-munch
+    label: Kurkure Masala Munch
+    price: 20
+    queries:
+      - "Kurkure Masala Munch single packet product photo"
+      - "Kurkure Masala Munch 90g packet product photo"
+
+  # --- cold drinks (query for the format you actually stock) ---
+  - slug: thums-up
+    label: Thums Up
+    price: 40
+    queries:
+      - "Thums Up 300ml single can product photo"
+      - "Thums Up can white background"
+
+  - slug: sprite
+    label: Sprite
+    price: 40
+    queries:
+      - "Sprite 300ml single can product photo"
+      - "Sprite green can white background"
+
+  - slug: fanta
+    label: Fanta Orange
+    price: 40
+    queries:
+      - "Fanta orange 300ml single can product photo"
+      - "Fanta orange can white background"
+
+  - slug: pepsi
+    label: Pepsi
+    price: 40
+    queries:
+      - "Pepsi 300ml single can product photo"
+      - "Pepsi blue can white background"
+
+  # --- instant noodles ---
+  - slug: maggi-2-minute
+    label: Maggi 2 Minute Noodles
+    price: 14
+    queries:
+      - "Maggi 2 minute masala 70g noodles packet front"
+      - "Nestle Maggi masala instant noodles single pack photo"

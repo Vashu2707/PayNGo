@@ -173,7 +173,7 @@ def main():
         r = s["tp"] / s["gts"] if s["gts"] else 0.0
         rows.append((cls, s["gts"], s["tp"], s["fp"], s["fn"], p, r))
 
-    # HoloSelecta class names run up to ~34 chars — size the column to fit.
+    # Class names can run long — size the column to fit.
     name_w = max([16] + [len(str(class_names.get(c, c))) for c in all_classes])
     header = f"{'class':<{name_w}} {'GT':>4} {'TP':>4} {'FP':>4} {'FN':>4} {'Prec':>6} {'Rec':>6}"
     print(header)
