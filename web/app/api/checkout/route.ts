@@ -13,10 +13,9 @@ const NO_CACHE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
 const OFFLINE_METHODS = ["cash"] as const;
 
 export async function POST(req: Request) {
+  // Guest checkout is allowed — the session (when present) only attributes
+  // the transaction to the signed-in cashier/customer.
   const session = await getSessionFromRequest(req);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: NO_CACHE });
-  }
 
   try {
     const body = await req.json();
@@ -39,7 +38,7 @@ export async function POST(req: Request) {
     // Offline methods are paid immediately (success) -> decrements stock.
     const result = await createTransaction(rawCart.items, paymentMethod as (typeof OFFLINE_METHODS)[number], {
       paymentStatus: "success",
-      userId: session.userId,
+      userId: session?.userId ?? null,
       cartFingerprint: fingerprint,
     });
     // Clear only the basket we just charged — never a newer one that the

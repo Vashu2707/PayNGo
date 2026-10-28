@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { Schema, model, models, type Model, type InferSchemaType } from "mongoose";
 import { connectToDatabase } from "./mongodb";
 import { getProduct, prettyName } from "./products";
+import { getEffectivePrices } from "./inventory";
 
 const cartItemSchema = new Schema(
   {
@@ -65,13 +66,16 @@ export interface CartState {
 export async function getCart(): Promise<CartState> {
   await connectToDatabase();
   const cart = await CartModel.findById("current").lean();
+  // Admin-set prices override the static catalog (see getEffectivePrices).
+  const prices = await getEffectivePrices();
 
   let totalCount = 0;
   let totalAmount = 0;
 
   const items: CartItemView[] = (cart?.items ?? []).map((i) => {
     const product = getProduct(i.name);
-    const unitPrice = product ? product.price : null;
+    const price = prices[i.name];
+    const unitPrice = price ?? null;
     const lineTotal = unitPrice !== null ? unitPrice * i.quantity : null;
     totalCount += i.quantity;
     if (lineTotal !== null) totalAmount += lineTotal;

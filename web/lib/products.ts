@@ -14,6 +14,12 @@
  * entries are kept in OVERRIDES. Prices for classes without an override are
  * placeholders (DEFAULT_PRICE) — replace them with real prices before
  * going live (checkout rejects a zero total, so every class needs a price).
+ *
+ * These are *defaults*: the admin can override any price at runtime from the
+ * dashboard (PATCH /api/inventory); overrides live on the MongoDB products
+ * collection. Money is always computed through getEffectivePrices()
+ * (lib/inventory.ts), which layers those overrides on top of this catalog —
+ * never read PRODUCT_CATALOG[...].price directly in a checkout path.
  */
 
 export interface ProductInfo {

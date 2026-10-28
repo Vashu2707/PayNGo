@@ -17,7 +17,8 @@ const NO_CACHE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
 
 /**
  * Client-side success endpoint. Requires ALL of:
- *  1. a valid session (the payment must belong to the caller),
+ *  1. the payment attempt belongs to this caller (signed-in session, or a
+ *     guest attempt when no session is present),
  *  2. the Razorpay checkout HMAC signature (timing-safe compare),
  *  3. a server-side `payments.fetch()` confirmation of status, order binding
  *     and exact amount — the browser is never trusted on its own.
@@ -25,10 +26,10 @@ const NO_CACHE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
  * webhook or GET /api/payments/status then finalize the payment.
  */
 export async function POST(req: Request) {
+  // Guest checkout: the session is optional; ownership below still rejects
+  // verifying an attempt that belongs to someone else.
   const session = await getSessionFromRequest(req);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: NO_CACHE });
-  }
+  const callerUserId = session?.userId ?? null;
 
   let body: { razorpay_order_id?: unknown; razorpay_payment_id?: unknown; razorpay_signature?: unknown };
   try {
@@ -52,7 +53,7 @@ export async function POST(req: Request) {
   if (!attempt) {
     return NextResponse.json({ error: "Unknown payment order." }, { status: 400, headers: NO_CACHE });
   }
-  if (attempt.userId && attempt.userId !== session.userId) {
+  if (attempt.userId && attempt.userId !== callerUserId) {
     return NextResponse.json({ error: "This payment belongs to another session." }, { status: 403, headers: NO_CACHE });
   }
 
@@ -64,7 +65,7 @@ export async function POST(req: Request) {
       razorpay_signature: signature,
     })
   ) {
-    console.error(`[payments] Signature mismatch for order ${orderId} (user ${session.userId}).`);
+    console.error(`[payments] Signature mismatch for order ${orderId} (user ${callerUserId ?? "guest"}).`);
     return NextResponse.json(
       { error: "Payment verification failed (signature mismatch)." },
       { status: 400, headers: NO_CACHE }
@@ -151,7 +152,7 @@ export async function POST(req: Request) {
     case "amount_mismatch":
     case "not_found":
       console.error(
-        `[payments] Rejected verify for order ${orderId}: ${server.state} (user ${session.userId}).`
+        `[payments] Rejected verify for order ${orderId}: ${server.state} (user ${callerUserId ?? "guest"}).`
       );
       return NextResponse.json(
         { error: "Payment could not be confirmed with Razorpay." },

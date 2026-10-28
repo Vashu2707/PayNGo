@@ -2,6 +2,7 @@ import { Schema, model, models, type InferSchemaType, type Model } from "mongoos
 import { connectToDatabase } from "./mongodb";
 import { runWithOptionalTransaction } from "./mongo-tx";
 import { getProduct, prettyName } from "./products";
+import { getEffectivePrices } from "./inventory";
 import { recordSaleOnce } from "./inventory";
 
 const transactionItemSchema = new Schema(
@@ -83,14 +84,18 @@ export async function createTransaction(
 ): Promise<CheckoutResult> {
   await connectToDatabase();
 
+  // Snapshot prices at sale time — admin price edits must never rewrite
+  // history, and the charged amount must match what the cart displayed.
+  const prices = await getEffectivePrices();
   const items: TransactionItem[] = rawItems.map((ri) => {
     const product = getProduct(ri.name);
+    const price = prices[ri.name] ?? null;
     return {
       name: ri.name,
       label: product?.label ?? prettyName(ri.name),
       quantity: ri.quantity,
-      unitPrice: product?.price ?? null,
-      lineTotal: product?.price != null ? product.price * ri.quantity : null,
+      unitPrice: price,
+      lineTotal: price != null ? price * ri.quantity : null,
     };
   });
 

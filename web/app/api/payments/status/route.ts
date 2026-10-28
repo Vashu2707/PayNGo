@@ -9,15 +9,14 @@ const NO_CACHE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
 const ORDER_ID_RE = /^order_[A-Za-z0-9]{6,64}$/;
 
 /**
- * Payment status for the signed-in payer. Reconciles against Razorpay's API
- * when the local record is still pending, so a browser refresh, a closed
- * checkout modal, or a lagging webhook all recover to the correct state.
+ * Payment status for the caller (signed-in or guest). Reconciles against
+ * Razorpay's API when the local record is still pending, so a browser
+ * refresh, a closed checkout modal, or a lagging webhook all recover to the
+ * correct state.
  */
 export async function GET(req: Request) {
   const session = await getSessionFromRequest(req);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: NO_CACHE });
-  }
+  const callerUserId = session?.userId ?? null;
 
   const url = new URL(req.url);
   const orderId = url.searchParams.get("orderId") ?? "";
@@ -26,7 +25,7 @@ export async function GET(req: Request) {
   }
 
   try {
-    const result = await getPaymentStatusForUser(orderId, session.userId);
+    const result = await getPaymentStatusForUser(orderId, callerUserId);
     if (!result) {
       return NextResponse.json({ error: "Unknown payment order." }, { status: 404, headers: NO_CACHE });
     }

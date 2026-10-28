@@ -8,7 +8,7 @@ import {
   TransactionModel,
 } from "@/lib/transactions";
 import { createRazorpayOrder, getRazorpayKeyId, isRazorpayConfigured } from "@/lib/razorpay";
-import { getProduct } from "@/lib/products";
+import { getEffectivePrices } from "@/lib/inventory";
 import { connectToDatabase } from "@/lib/mongodb";
 import {
   getAttemptByOrderId,
@@ -23,10 +23,10 @@ export const dynamic = "force-dynamic";
 const NO_CACHE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
 
 export async function POST(req: Request) {
+  // Guest checkout is supported: without a session the attempt is simply
+  // unattributed (userId null). The HMAC + server-side Razorpay checks below
+  // still gate every settlement.
   const session = await getSessionFromRequest(req);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: NO_CACHE });
-  }
 
   // Which online rail the cashier selected. Both settle through Razorpay;
   // this only decides the checkout's payment-method filter and how the
@@ -61,11 +61,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Cart is empty" }, { status: 400, headers: NO_CACHE });
     }
 
-    // Compute server-side total (never trust the client's basket sum).
+    // Compute server-side total (never trust the client's basket sum) using
+    // the admin's current prices — the same map the live cart displays.
+    const prices = await getEffectivePrices();
     let totalAmount = 0;
     for (const it of rawCart.items) {
-      const product = getProduct(it.name);
-      if (product) totalAmount += product.price * it.quantity;
+      const price = prices[it.name];
+      if (price != null) totalAmount += price * it.quantity;
     }
     if (totalAmount <= 0) {
       return NextResponse.json(
@@ -76,7 +78,7 @@ export async function POST(req: Request) {
 
     const amountPaise = Math.round(totalAmount * 100);
     const fingerprint = cartFingerprint(rawCart.items);
-    const userId = session.userId;
+    const userId = session?.userId ?? null;
     const key = getRazorpayKeyId();
 
     await connectToDatabase();

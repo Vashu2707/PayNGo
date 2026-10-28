@@ -407,14 +407,16 @@ export async function reconcileOrder(orderId: string): Promise<ReconcileResult> 
 
 export type PaymentStatusResult = (ReconcileResult & { attemptStatus: PaymentAttemptStatus; retryCount: number }) | null;
 
-/** Status for the paying session only — reconciles with Razorpay on the fly. */
+/** Status for the paying caller only — reconciles with Razorpay on the fly. */
 export async function getPaymentStatusForUser(
   orderId: string,
-  userId: string
+  userId: string | null
 ): Promise<PaymentStatusResult> {
   await connectToDatabase();
   const attempt = await getAttemptByOrderId(orderId);
   if (!attempt) return null;
+  // Owner-bound attempts are only visible to their owner; guest attempts
+  // (userId null) are readable by anyone holding the order id.
   if (attempt.userId && attempt.userId !== userId) return null;
 
   const result = await reconcileOrder(orderId);

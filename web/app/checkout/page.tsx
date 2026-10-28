@@ -122,22 +122,16 @@ export default function CheckoutPage() {
   const [receipt, setReceipt] = useState<Transaction | null>(null);
   const paymentOpenRef = useRef(false);
 
-  // Auth check + load the cart.
+  // Load the cart. Guest checkout is supported — no sign-in required.
   useEffect(() => {
     (async () => {
       try {
-        const meRes = await fetch("/api/auth/me");
-        const me = await meRes.json();
-        if (!me.user) {
-          router.replace("/login");
-          return;
-        }
         const cartRes = await fetch("/api/cart");
         if (!cartRes.ok) throw new Error("Cart unavailable");
         const data: CartState = await cartRes.json();
         setCart(data);
         if (data.items.length === 0) {
-          // Nothing to pay — send the cashier back to the store.
+          // Nothing to pay — send the shopper back to the store.
           router.replace("/");
         }
       } catch {

@@ -77,6 +77,10 @@ export default function DashboardPage() {
   const [busy, setBusy] = useState(false);
   const [restockQty, setRestockQty] = useState<Record<string, number>>({});
   const [restockBusy, setRestockBusy] = useState<Record<string, boolean>>({});
+  // Inline price editing: draft text per slug, save-in-flight and errors.
+  const [priceDraft, setPriceDraft] = useState<Record<string, string>>({});
+  const [priceBusy, setPriceBusy] = useState<Record<string, boolean>>({});
+  const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
   const [accountsInit, setAccountsInit] = useState(false);
 
   // Setup-stock state (only shown when no products exist yet).
@@ -89,6 +93,11 @@ export default function DashboardPage() {
         const me = await meRes.json();
         if (!me.user) {
           router.replace("/login");
+          return;
+        }
+        if (me.user.role !== "owner") {
+          // Non-admin accounts never see the dashboard.
+          router.replace("/");
           return;
         }
         setUser(me.user);
@@ -135,6 +144,45 @@ export default function DashboardPage() {
       await loadAll();
     } finally {
       setRestockBusy((b) => ({ ...b, [slug]: false }));
+    }
+  };
+
+  /** Saves the edited price for one product (admin-only PATCH /api/inventory). */
+  const doSetPrice = async (slug: string) => {
+    const raw = (priceDraft[slug] ?? "").trim();
+    const price = Number(raw);
+    if (raw === "" || !Number.isInteger(price) || price < 0 || price > 1_000_000) {
+      setPriceErrors((e) => ({ ...e, [slug]: "Enter whole rupees (0–1000000)." }));
+      return;
+    }
+    setPriceBusy((b) => ({ ...b, [slug]: true }));
+    setPriceErrors((e) => {
+      if (!e[slug]) return e;
+      const next = { ...e };
+      delete next[slug];
+      return next;
+    });
+    try {
+      const res = await fetch("/api/inventory", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, price }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not update price.");
+      setPriceDraft((d) => {
+        const next = { ...d };
+        delete next[slug];
+        return next;
+      });
+      await loadAll();
+    } catch (err) {
+      setPriceErrors((e) => ({
+        ...e,
+        [slug]: err instanceof Error ? err.message : "Could not update price.",
+      }));
+    } finally {
+      setPriceBusy((b) => ({ ...b, [slug]: false }));
     }
   };
 
@@ -244,8 +292,9 @@ export default function DashboardPage() {
                       flex: 1,
                       minWidth: 2,
                       height: `${Math.max(3, Math.round((d.revenue / maxDaily) * 100))}%`,
-                      background: d.revenue > 0 ? "var(--indigo)" : "#e2e8f0",
+                      background: d.revenue > 0 ? "linear-gradient(180deg,#6366f1,#4f46e5)" : "#e2e8f0",
                       borderRadius: 3,
+                      boxShadow: d.revenue > 0 ? "0 2px 6px rgba(79,70,229,.25)" : undefined,
                     }}
                   />
                 ))}
@@ -258,6 +307,9 @@ export default function DashboardPage() {
                 <div className="panel" style={{ marginBottom: 16 }}>
                   <div className="panel-header">
                     <div className="panel-title">Inventory</div>
+                    <span className="panel-hint">
+                      Edit ₹ and press Save — applies at checkout immediately
+                    </span>
                   </div>
                   {products.length === 0 ? (
                     <div className="empty-state">
@@ -283,13 +335,62 @@ export default function DashboardPage() {
                       {products.map((p) => {
                         const pct = p.openingStock > 0 ? Math.round((p.stock / p.openingStock) * 100) : 0;
                         const low = p.stock <= 5;
+                        const draft = priceDraft[p.slug];
+                        const current = String(p.price);
+                        const typed = (draft ?? current).trim();
+                        const typedVal = Number(typed);
+                        const priceValid =
+                          typed !== "" &&
+                          Number.isInteger(typedVal) &&
+                          typedVal >= 0 &&
+                          typedVal <= 1_000_000;
+                        const priceDirty = draft !== undefined && draft.trim() !== current;
                         return (
                           <div key={p.slug} className="prod-row">
                             <div className="prod-info">
                               <div className="prod-label">{p.label}</div>
                               <div className="prod-meta">
-                                {INR.format(p.price)} · {p.soldTotal} sold · open {p.openingStock}
+                                {p.soldTotal} sold · open {p.openingStock}
                               </div>
+                            </div>
+                            <div className="price-cell">
+                              <div className="price-form">
+                                <span className="price-currency">₹</span>
+                                <input
+                                  className="price-input"
+                                  type="number"
+                                  min={0}
+                                  max={1000000}
+                                  step={1}
+                                  aria-label={`Price of ${p.label}`}
+                                  value={draft ?? current}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setPriceDraft((d) => ({ ...d, [p.slug]: v }));
+                                    setPriceErrors((err) => {
+                                      if (!err[p.slug]) return err;
+                                      const next = { ...err };
+                                      delete next[p.slug];
+                                      return next;
+                                    });
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") doSetPrice(p.slug);
+                                  }}
+                                />
+                                <button
+                                  className="btn-mini btn-price"
+                                  disabled={
+                                    !!priceBusy[p.slug] || !priceDirty || !priceValid
+                                  }
+                                  onClick={() => doSetPrice(p.slug)}
+                                >
+                                  {priceBusy[p.slug] ? "…" : "Save"}
+                                </button>
+                              </div>
+                              {priceErrors[p.slug] && (
+                                <div className="price-error">{priceErrors[p.slug]}</div>
+                              )}
                             </div>
                             <div className="prod-bar">
                               <div

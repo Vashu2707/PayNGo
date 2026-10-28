@@ -94,6 +94,14 @@ export default function Home() {
 
   const hiddenRef = useRef(false);
   const prevCartRef = useRef("");
+  // Customers (not signed in) only ever see the live cart + checkout; the
+  // transactions feed is reserved for the signed-in store admin.
+  const isAdmin = user?.role === "owner";
+  const isAdminRef = useRef(false);
+
+  useEffect(() => {
+    isAdminRef.current = isAdmin;
+  }, [isAdmin]);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -115,6 +123,7 @@ export default function Home() {
   }, []);
 
   const fetchTxns = useCallback(async () => {
+    if (!isAdminRef.current) return; // customers never receive transactions
     try {
       const res = await fetch("/api/transactions");
       if (!res.ok) return;
@@ -124,6 +133,11 @@ export default function Home() {
       /* silent */
     }
   }, []);
+
+  // Load the admin feed once the session resolves as admin.
+  useEffect(() => {
+    if (isAdmin) fetchTxns();
+  }, [isAdmin, fetchTxns]);
 
   /* Polling with visibility pause */
   useEffect(() => {
@@ -155,12 +169,12 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  /* Re-fetch txns when cart changes */
+  /* Re-fetch txns when cart changes (admin only) */
   useEffect(() => {
     const snap = JSON.stringify(cart.items);
     if (snap !== prevCartRef.current) {
       prevCartRef.current = snap;
-      if (!hiddenRef.current) fetchTxns();
+      if (!hiddenRef.current && isAdminRef.current) fetchTxns();
     }
   }, [cart.items, fetchTxns]);
 
@@ -184,7 +198,7 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="pos-body">
+      <div className={`pos-body${isAdmin ? "" : " customer"}`}>
         {/* ── Cart panel ─────────────────────────────── */}
         <main className="pos-main">
           <div className="cart-panel">
@@ -260,50 +274,50 @@ export default function Home() {
           </div>
         </main>
 
-        {/* ── Transaction history sidebar ────────────── */}
-        <aside className="pos-sidebar">
-          <div className="sidebar-header">
-            <h2>Recent Transactions</h2>
-          </div>
-          <div className="txn-list">
-            {txns.length === 0 ? (
-              <div className="txn-empty">No transactions yet</div>
-            ) : (
-              txns.map((txn) => (
-                <div key={txn._id} className="txn-card">
-                  <div className="txn-card-header">
-                    <span className="txn-amount">{INR.format(txn.totalAmount)}</span>
-<span className={`txn-method ${txn.paymentMethod}`}>
-  {txn.paymentMethod === "cash" ? "💵" : txn.paymentMethod === "upi" ? "📱" : txn.paymentMethod === "card" ? "💳" : "🛡️"}{" "}
-  {txn.paymentMethod}
-  {txn.paymentStatus !== "success" ? ` · ${txn.paymentStatus}` : ""}
-</span>
+        {/* ── Transaction history (admin only) ────────────── */}
+        {isAdmin && (
+          <aside className="pos-sidebar">
+            <div className="sidebar-header">
+              <h2>Recent Transactions</h2>
+            </div>
+            <div className="txn-list">
+              {txns.length === 0 ? (
+                <div className="txn-empty">No transactions yet</div>
+              ) : (
+                txns.map((txn) => (
+                  <div key={txn._id} className="txn-card">
+                    <div className="txn-card-header">
+                      <span className="txn-amount">{INR.format(txn.totalAmount)}</span>
+                      <span className={`txn-method ${txn.paymentMethod}`}>
+                        {txn.paymentMethod === "cash"
+                          ? "💵"
+                          : txn.paymentMethod === "upi"
+                            ? "📱"
+                            : txn.paymentMethod === "card"
+                              ? "💳"
+                              : "🛡️"}{" "}
+                        {txn.paymentMethod}
+                        {txn.paymentStatus !== "success" ? ` · ${txn.paymentStatus}` : ""}
+                      </span>
+                    </div>
+                    <div className="txn-items">
+                      {txn.items.map((it) => (
+                        <div key={it.name} className="txn-item">
+                          <span className="txn-item-name">{it.label}</span>
+                          <span className="txn-item-qty">×{it.quantity}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="txn-card-foot">
+                      <span>{txnDate(txn.ts)}</span>
+                      <span>{txnTime(txn.ts)}</span>
+                    </div>
                   </div>
-                  <div className="txn-items">
-                    {txn.items.map((it) => (
-                      <div key={it.name} className="txn-item">
-                        <span className="txn-item-name">{it.label}</span>
-                        <span className="txn-item-qty">×{it.quantity}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      marginTop: 8,
-                      fontSize: 11,
-                      color: "#64748b",
-                    }}
-                  >
-                    <span>{txnDate(txn.ts)}</span>
-                    <span>{txnTime(txn.ts)}</span>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </aside>
+                ))
+              )}
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   );

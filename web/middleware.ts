@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const PROTECTED_PREFIXES = ["/dashboard", "/checkout"];
+// Customers browse the store and check out as guests — only the admin
+// dashboard is session-gated here. (Role checks happen in the page/API.)
+const PROTECTED_PREFIXES = ["/dashboard"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -30,5 +32,5 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/checkout/:path*"],
+  matcher: ["/dashboard/:path*"],
 };

@@ -175,6 +175,65 @@ export async function getAllProducts(): Promise<ProductStock[]> {
   return docs.map((d) => serialize(d as unknown as Record<string, unknown>));
 }
 
+/* ── Runtime pricing ──────────────────────────────────────────────────
+ * The static catalog in products.ts holds the *default* prices (and the
+ * labels/emoji used everywhere). The admin can override any price from the
+ * dashboard; those overrides live on the products collection and win over
+ * the catalog everywhere money is computed: the live cart, transaction
+ * snapshots and the Razorpay order amount.
+ *
+ * The merged map is cached briefly so the 1.5s cart poll does not query
+ * MongoDB every tick; updateProductPrice() invalidates it immediately, so a
+ * price change reaches customers on their next poll.
+ */
+
+const PRICE_CACHE_TTL_MS = 10_000;
+let priceCache: { prices: Record<string, number>; at: number } | null = null;
+
+export function invalidatePriceCache(): void {
+  priceCache = null;
+}
+
+/** Catalog prices with any admin overrides from Mongo applied on top. */
+export async function getEffectivePrices(): Promise<Record<string, number>> {
+  const now = Date.now();
+  if (priceCache && now - priceCache.at < PRICE_CACHE_TTL_MS) return priceCache.prices;
+
+  const prices: Record<string, number> = {};
+  for (const [slug, info] of Object.entries(PRODUCT_CATALOG)) {
+    prices[slug] = info.price;
+  }
+  try {
+    await connectToDatabase();
+    const docs = await ProductModel.find({}, { _id: 0, slug: 1, price: 1 }).lean();
+    for (const d of docs) {
+      const price = Number(d.price);
+      if (Number.isFinite(price)) prices[String(d.slug)] = price;
+    }
+  } catch (err) {
+    // Fall back to catalog-only prices rather than breaking checkout.
+    console.error("getEffectivePrices: could not read product overrides:", err);
+  }
+  priceCache = { prices, at: now };
+  return prices;
+}
+
+/**
+ * Set a product's price (whole rupees). Returns the updated product, or null
+ * when the slug is unknown. Invalidates the price cache on success.
+ */
+export async function updateProductPrice(slug: string, price: number): Promise<ProductStock | null> {
+  await connectToDatabase();
+  const doc = await ProductModel.findOneAndUpdate(
+    { slug },
+    { $set: { price, updatedAt: new Date() } },
+    { new: true }
+  ).lean();
+  if (!doc) return null;
+  invalidatePriceCache();
+  return serialize(doc as unknown as Record<string, unknown>);
+}
+
 export async function getProductStock(slug: string): Promise<ProductStock | null> {
   await connectToDatabase();
   const doc = await ProductModel.findOne({ slug }).lean();
